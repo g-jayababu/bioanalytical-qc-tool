@@ -169,7 +169,6 @@ if st.button("Generate Dashboard"):
             lower_is_limit = avg_is_area * 0.4 if pd.notna(avg_is_area) else 0
             upper_is_limit = avg_is_area * 1.6 if pd.notna(avg_is_area) else float('inf')
             
-            # --- VBA LAYOUT LISTS ---
             ccqc_rows = []
             sample_rows = []
             ccqc_chart = []
@@ -178,7 +177,7 @@ if st.button("Generate Dashboard"):
             
             # Header Row for CC/QC
             ccqc_rows.append({"Sample Name": "CC and QC", "Area": "", "IS area": "", "Calc.Conc.": "", "% Accuracy": ""})
-            ccqc_chart.append((np.nan, np.nan, np.nan, np.nan))
+            ccqc_chart.append((np.nan, np.nan, np.nan, np.nan, np.nan))
             
             for index, row in df.iterrows():
                 s_name = str(row[name_col]).strip().upper()
@@ -208,15 +207,20 @@ if st.button("Generate Dashboard"):
                 if 'UNKNOWN' in s_type and pd.notna(conc) and conc > uloq:
                     above_uloq.append({'name': s_name, 'conc': conc})
 
-                # Row formatting
                 row_dict = {"Sample Name": s_name, "Area": a_area, "IS area": s_is_area, "Calc.Conc.": conc, "% Accuracy": acc_val}
-                chart_tuple = [current_inj, np.nan, np.nan, np.nan]
+                
+                # Plot Engine: 5 elements (Inj Order, CCQC IS%, Blank IS%, Sample IS%, Subject Conc)
+                chart_tuple = [current_inj, np.nan, np.nan, np.nan, np.nan]
                 
                 if pd.notna(s_is_area) and pd.notna(avg_is_area) and avg_is_area > 0:
                     pct_diff = (s_is_area / avg_is_area) * 100 - 100
                     if 'STANDARD' in s_type or 'QC' in s_type or 'QUALITY' in s_type: chart_tuple[1] = pct_diff
                     elif 'BLANK' in s_type or '-BLK' in s_name or '+IS' in s_name: chart_tuple[2] = pct_diff
                     else: chart_tuple[3] = pct_diff
+                
+                # Subject Concentration Chart Tracker
+                if 'UNKNOWN' in s_type and 'AQSTD' not in s_name and 'BLK' not in s_name and '+IS' not in s_name and 'BLANK' not in s_name:
+                    chart_tuple[4] = conc
 
                 if 'STANDARD' in s_type or 'QC' in s_type or 'QUALITY' in s_type:
                     ccqc_rows.append(row_dict)
@@ -260,12 +264,11 @@ if st.button("Generate Dashboard"):
                 
             safe_sheet_name = re.sub(r'[\\/*?:\[\]]', '_', file.name)[:31]
             
-            # Construct Final VBA List Arrays
             avg_row = {"Sample Name": "Average IS area of CC and QC", "Area": "", "IS area": avg_is_area, "Calc.Conc.": "", "% Accuracy": ""}
             header_row = {"Sample Name": "Sample Name", "Area": "Area", "IS area": "IS area", "Calc.Conc.": "Calc.Conc.", "% Accuracy": "% Acc"}
             
             final_rows = ccqc_rows + [avg_row, header_row] + sample_rows
-            final_chart = ccqc_chart + [(np.nan, np.nan, np.nan, np.nan), (np.nan, np.nan, np.nan, np.nan)] + sample_chart
+            final_chart = ccqc_chart + [(np.nan, np.nan, np.nan, np.nan, np.nan), (np.nan, np.nan, np.nan, np.nan, np.nan)] + sample_chart
             
             batch_meta_data[safe_sheet_name] = {
                 'rows': final_rows, 'chart_data': final_chart,
@@ -333,7 +336,6 @@ if st.button("Generate Dashboard"):
             # --- DEFINE FORMATTING STYLES ---
             tnr = {'font_name': 'Times New Roman', 'font_size': 10}
             
-            # Global
             green_sheet_bg = workbook.add_format({**tnr, 'bg_color': '#CDE4CE'})
             header_format = workbook.add_format({**tnr, 'bold': True, 'bg_color': '#C6E0B4', 'border': 1, 'align': 'center', 'valign': 'vcenter'})
             yellow_flag = workbook.add_format({**tnr, 'bg_color': '#FFFF00', 'bold': True, 'font_color': '#FF0000'})
@@ -348,7 +350,6 @@ if st.button("Generate Dashboard"):
             success_fmt = workbook.add_format({**tnr, 'bg_color': '#99FF99', 'align': 'center', 'valign': 'vcenter'})
             failed_fmt = workbook.add_format({**tnr, 'bg_color': '#FF9999', 'align': 'center', 'valign': 'vcenter'})
             
-            # VBA Exact Formatting
             data_white = workbook.add_format({**tnr, 'bg_color': '#FFFFFF', 'border': 1, 'align': 'center', 'valign': 'vcenter'})
             data_white_float = workbook.add_format({**tnr, 'bg_color': '#FFFFFF', 'border': 1, 'align': 'center', 'valign': 'vcenter', 'num_format': '0.000'})
             data_white_pct = workbook.add_format({**tnr, 'bg_color': '#FFFFFF', 'border': 1, 'align': 'center', 'valign': 'vcenter', 'num_format': '0.00'})
@@ -428,10 +429,10 @@ if st.button("Generate Dashboard"):
                     ws.write(r_idx, 27, "" if pd.isna(c_tuple[1]) else c_tuple[1])
                     ws.write(r_idx, 28, "" if pd.isna(c_tuple[2]) else c_tuple[2])
                     ws.write(r_idx, 29, "" if pd.isna(c_tuple[3]) else c_tuple[3])
+                    ws.write(r_idx, 30, "" if pd.isna(c_tuple[4]) else c_tuple[4]) # Subject-only Conc Column
 
-                ws.set_column(26, 29, None, None, {'hidden': True})
+                ws.set_column(26, 30, None, None, {'hidden': True})
                 
-                # Right Dashboard Generation
                 ws.write('G2', 'Intercept', data_white)
                 ws.write('H2', meta.get('intercept', ''), data_white_float)
                 ws.write('G3', 'Slope', data_white)
@@ -481,13 +482,15 @@ if st.button("Generate Dashboard"):
                     ws.insert_chart('G18', chart1)
                     
                     chart2 = workbook.add_chart({'type': 'scatter', 'subtype': 'straight_with_markers'})
-                    chart2.add_series({'name': 'Concentration', 'categories': [safe_sheet_name, 1, 26, max_row-1, 26], 'values': [safe_sheet_name, 1, 3, max_row-1, 3], 'marker': {'type': 'diamond', 'size': 5, 'fill': {'color': '#4F81BD'}, 'border': {'color': '#4F81BD'}}, 'line': {'color': '#4F81BD', 'width': 1.5}})
+                    # Pointing to Column AE (30) which strictly contains only the Unknown Subject Samples
+                    chart2.add_series({'name': 'Concentration', 'categories': [safe_sheet_name, 1, 26, max_row-1, 26], 'values': [safe_sheet_name, 1, 30, max_row-1, 30], 'marker': {'type': 'diamond', 'size': 5, 'fill': {'color': '#4F81BD'}, 'border': {'color': '#4F81BD'}}, 'line': {'color': '#4F81BD', 'width': 1.5}})
                     chart2.set_title({'name': 'Chart Title', 'name_font': {'size': 14, 'bold': True, 'name': 'Times New Roman'}})
                     chart2.set_x_axis({'major_gridlines': {'visible': False}, 'num_font': {'name': 'Times New Roman'}})
                     chart2.set_y_axis({'major_gridlines': {'visible': True}, 'num_format': '0.000', 'num_font': {'name': 'Times New Roman'}})
                     chart2.set_legend({'none': True})
                     chart2.set_size({'width': 450, 'height': 230})
                     chart2.show_hidden_data()
+                    chart2.show_blanks_as('span') # Tells Excel to bridge gaps where CC/QC/Blanks are injected
                     ws.insert_chart('G30', chart2)
                     
                     or_start = 45
@@ -581,7 +584,7 @@ if st.button("Generate Dashboard"):
                 ws_conc.write(row_idx, 4, s_name, general_fmt)
                 row_idx += 1
 
-        st.success("Dashboard successfully matched to Legacy Format!")
+        st.success("Dashboard successfully generated with Subject-Only line charts!")
         st.download_button(
             label="Download Master Excel Dashboard",
             data=output.getvalue(),
