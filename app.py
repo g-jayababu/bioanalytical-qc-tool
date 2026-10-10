@@ -10,11 +10,13 @@ st.title("Bioanalytical Auto-QC Dashboard")
 
 st.header("1. Upload Files")
 
-col1, col2 = st.columns(2)
+col1, col2, col3 = st.columns(3)
 with col1:
     setup_file = st.file_uploader("Upload Setup Excel File", type=["xls", "xlsx", "xlsm"])
 with col2:
     uploaded_files = st.file_uploader("Upload TSQ Quantis Plus Export Files", type=["csv", "xls", "xlsx"], accept_multiple_files=True)
+with col3:
+    repeat_files = st.file_uploader("Upload Repeat Files (Optional)", type=["csv", "xls", "xlsx"], accept_multiple_files=True)
 
 def load_data(file):
     file_name_lower = file.name.lower()
@@ -70,7 +72,6 @@ if st.button("Generate Dashboard"):
                     nominals[cc_id] = nom_val
                     if 'STD' in cc_id or 'STANDARD' in cc_id: std_names.append(cc_id)
             std_names = sorted(std_names)
-            st.info(f"Setup Loaded | Molecule: {mol_name} | Study: {study_num} | LLOQ: {lloq} | ULOQ: {uloq}")
         except Exception as e:
             st.error(f"Failed to read Setup file. Error: {str(e)}")
             st.stop()
@@ -83,6 +84,7 @@ if st.button("Generate Dashboard"):
         batch_meta_data = {}
         all_repeats_data = [] 
         
+        # --- 1. PARSE MAIN EXPORT FILES ---
         for file in uploaded_files:
             file.seek(0)
             safe_sheet_name = re.sub(r'[\\/*?:\[\]]', '_', file.name)[:31]
@@ -207,8 +209,7 @@ if st.button("Generate Dashboard"):
                 
                 if pd.notna(s_is_area) and ('STANDARD' in s_type or 'QC' in s_type or 'UNKNOWN' in s_type):
                     if s_is_area < lower_is_limit or s_is_area > upper_is_limit:
-                        if 'BLK' not in s_name and 'AQSTD' not in s_name:
-                             out_of_range_is.append({'name': s_name, 'conc': conc})
+                        if 'BLK' not in s_name and 'AQSTD' not in s_name: out_of_range_is.append({'name': s_name, 'conc': conc})
                 if 'UNKNOWN' in s_type and pd.notna(conc) and conc > uloq:
                     above_uloq.append({'name': s_name, 'conc': conc})
 
@@ -233,11 +234,10 @@ if st.button("Generate Dashboard"):
                     if s_name in seen_ccqc: file_dupes.append(s_name)
                     else: seen_ccqc.add(s_name)
                 else:
-                    # Automatically map %IS into Column E for Unknown Samples
                     row_dict["% Accuracy"] = pct_diff 
                     sample_rows.append(row_dict)
                     sample_chart.append(tuple(chart_tuple))
-                    if 'UNKNOWN' in s_type and 'AQSTD' not in s_name and 'BLK' not in s_name and '+IS' not in s_name:
+                    if 'UNKNOWN' in s_type and 'AQSTD' not in s_name and 'BLK' not in s_name and '+IS' not in s_name and 'BLANK' not in s_name:
                         if s_name in seen_samples: file_sample_dupes.append(s_name)
                         else:
                             seen_samples.add(s_name)
@@ -297,6 +297,56 @@ if st.button("Generate Dashboard"):
                 "Nominal Conc. Check": nom_check_msg, "Duplicate CC & QC ID Check": dup_ccqc_msg, "Duplicate Sample Name Check": dup_samp_msg
             })
 
+        # --- 2. PARSE REPEAT FILES ---
+        repeat_samples = {}
+        if repeat_files:
+            for file in repeat_files:
+                file.seek(0)
+                df_rep, _ = load_data(file)
+                if df_rep is None: continue
+                
+                df_rep = df_rep.dropna(how='all').dropna(how='all', axis=1).reset_index(drop=True)
+                header_idx = None
+                for idx, row in df_rep.iterrows():
+                    row_string = str(row.values).lower()
+                    if 'sample name' in row_string or ('sample' in row_string and 'type' in row_string):
+                        header_idx = idx
+                        break
+                        
+                if header_idx is not None:
+                    new_headers = df_rep.iloc[header_idx]
+                    df_rep = df_rep.iloc[header_idx + 1:].copy()
+                    df_rep.columns = [str(c).lower().strip() for c in new_headers]
+                else:
+                    df_rep.columns = [str(c).lower().strip() for c in df_rep.columns]
+
+                df_rep = df_rep.loc[:, ~df_rep.columns.str.contains('^nan$', case=False, na=False)]
+                name_col = next((c for c in df_rep.columns if 'sample name' in c or 'sample' in c), None)
+                conc_col = next((c for c in df_rep.columns if 'calc' in c and 'conc' in c), None)
+                
+                if not name_col or not conc_col: continue
+                
+                for index, row in df_rep.iterrows():
+                    s_name = str(row[name_col]).strip().upper()
+                    conc = pd.to_numeric(row[conc_col], errors='coerce')
+                    
+                    if 'AQSTD' not in s_name and 'BLK' not in s_name and '+IS' not in s_name and 'BLANK' not in s_name and 'STD' not in s_name and 'QC' not in s_name:
+                        parts = re.split(r'[-_]', s_name)
+                        subj_str = parts[0] if len(parts) > 0 else s_name
+                        period_str = parts[1] if len(parts) > 1 else ""
+                        tp_str = parts[2] if len(parts) > 2 else ""
+                        
+                        subj_nums = re.findall(r'\d+', subj_str)
+                        subj_int = int(subj_nums[-1]) if subj_nums else 0
+                        period_clean = period_str.strip().upper()
+                        
+                        tp_nums = re.findall(r'\d+\.\d+|\d+', tp_str)
+                        tp_float = float(tp_nums[0]) if tp_nums else -1.0
+                        if "PRE" in tp_str.upper(): tp_float = -1.0
+                        
+                        # Store by universal coordinates to handle suffix differences (like _R)
+                        repeat_samples[(subj_int, period_clean, tp_float)] = (conc, s_name)
+
         excel_tabs["Summary"] = pd.DataFrame(summary_log)
         
         if all_repeats_data:
@@ -339,6 +389,7 @@ if st.button("Generate Dashboard"):
             qc_df = pd.concat([pd.DataFrame([row_nom_qc, row_low_qc, row_up_qc]), qc_df_data], ignore_index=True)
             excel_tabs["QC"] = qc_df[qc_columns]
 
+        # --- 3. EXPORT WRITER ---
         output = io.BytesIO()
         with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
             
@@ -430,7 +481,6 @@ if st.button("Generate Dashboard"):
                         ws.write(r_idx, 1, "Area", table_header_green)
                         ws.write(r_idx, 2, "IS area", table_header_green)
                         ws.write(r_idx, 3, "Calc.Conc.", table_header_green)
-                        # Switch header intelligently based on block mapping
                         ws.write(r_idx, 4, row_dict["% Accuracy"], table_header_green)
                     else:
                         ws.write(r_idx, 0, row_dict["Sample Name"], data_white)
@@ -442,12 +492,9 @@ if st.button("Generate Dashboard"):
                         else:
                             ws.write(r_idx, 3, "" if pd.isna(conc_val) else conc_val, data_white_float)
                             
-                        # Format Col E (% Acc or % IS variation) correctly
                         acc = row_dict["% Accuracy"]
-                        if pd.isna(acc) or acc == "":
-                            ws.write(r_idx, 4, "", data_white_pct)
-                        else:
-                            ws.write(r_idx, 4, acc, data_white_pct)
+                        if pd.isna(acc) or acc == "": ws.write(r_idx, 4, "", data_white_pct)
+                        else: ws.write(r_idx, 4, acc, data_white_pct)
 
                     c_tuple = chart_data[r_idx]
                     ws.write(r_idx, 26, "" if pd.isna(c_tuple[0]) else c_tuple[0])
@@ -576,22 +623,12 @@ if st.button("Generate Dashboard"):
                         ws.write_formula(stat_row + 3, col_num, f"=IFERROR(({col_letter}{stat_row + 1}/{col_letter}2)*100, \"\")", pct_fmt)
                         ws.conditional_format(data_range, {'type': 'formula', 'criteria': f"=AND(ISNUMBER({col_letter}5), OR({col_letter}5<{col_letter}$3, {col_letter}5>{col_letter}$4))", 'format': yellow_flag})
 
-            # --- CONCENTRATION DATA MATRIX TAB ---
-            ws_conc = workbook.add_worksheet("Concentration Data")
-            ws_conc.set_column('A:E', 15, general_fmt)
-            ws_conc.set_column('D:D', 20, general_fmt)
-            ws_conc.set_column('E:E', 25, general_fmt)
-            
-            conc_headers = ["Subject No.", "Period No.", "Timepoints", "Conc.(ng/mL)", "Sample Name"]
-            for col_num, header in enumerate(conc_headers): 
-                ws_conc.write(0, col_num, header, table_header_green)
-                
+            # --- CONCENTRATION DATA TABS (INITIAL & REPEATS) ---
             periods_list = [p.strip() for p in periods_str.split(',')] if periods_str else []
             timepoints_list = [tp.strip() for tp in timepoints_str.split(',')] if timepoints_str else []
+            mapped_samples = {}
             
-            row_idx = 1
             if num_subj > 0 and periods_list and timepoints_list:
-                mapped_samples = {}
                 for s_name, conc in global_samples.items():
                     parts = re.split(r'[-_]', s_name)
                     subj_str = parts[0] if len(parts) > 0 else s_name
@@ -607,7 +644,19 @@ if st.button("Generate Dashboard"):
                     if "PRE" in tp_str.upper(): tp_float = -1.0
                     
                     mapped_samples[(subj_int, period_clean, tp_float)] = (conc, s_name)
-                    
+            
+            # Initial Data Matrix
+            ws_conc = workbook.add_worksheet("Concentration Data")
+            ws_conc.set_column('A:B', 15, general_fmt)
+            ws_conc.set_column('C:C', 15, general_fmt)
+            ws_conc.set_column('D:D', 20, conc_fmt)
+            ws_conc.set_column('E:E', 25, general_fmt)
+            
+            conc_headers = ["Subject No.", "Period No.", "Timepoints", "Conc.(ng/mL)", "Sample Name"]
+            for col_num, header in enumerate(conc_headers): ws_conc.write(0, col_num, header, table_header_green)
+                
+            row_idx = 1
+            if num_subj > 0 and periods_list and timepoints_list:
                 for subj_idx in range(1, num_subj + 1):
                     subj_formatted = f"S{subj_idx:03d}"
                     for period_val in periods_list:
@@ -628,13 +677,8 @@ if st.button("Generate Dashboard"):
                                 
                             ws_conc.write(row_idx, 0, subj_formatted, data_white)
                             ws_conc.write(row_idx, 1, period_val, data_white)
-                            ws_conc.write(row_idx, 2, f"{tp_val}", data_white)
-                            
-                            if display_conc in ["BLQ", "M"]:
-                                ws_conc.write(row_idx, 3, display_conc, data_white)
-                            else:
-                                ws_conc.write(row_idx, 3, display_conc, data_white_float)
-                                
+                            ws_conc.write(row_idx, 2, f"'{tp_val}", data_white)
+                            ws_conc.write(row_idx, 3, display_conc, data_white if display_conc in ["BLQ", "M"] else data_white_float)
                             ws_conc.write(row_idx, 4, s_name_out, data_white)
                             row_idx += 1
             else:
@@ -653,7 +697,106 @@ if st.button("Generate Dashboard"):
                     ws_conc.write(row_idx, 4, s_name, data_white)
                     row_idx += 1
 
-        st.success("Dashboard generated successfully with Flat Concentration Data Matrix!")
+            # Final Conc After Repeat Matrix
+            if repeat_files:
+                ws_rep = workbook.add_worksheet("Final Conc After Repeat")
+                ws_rep.set_column('A:B', 15, general_fmt)
+                ws_rep.set_column('C:C', 15, general_fmt)
+                ws_rep.set_column('D:D', 20, conc_fmt)
+                ws_rep.set_column('E:E', 25, general_fmt)
+                ws_rep.set_column('F:F', 20, conc_fmt)
+                ws_rep.set_column('G:G', 20, pct_fmt)
+                
+                rep_headers = ["Subject No.", "Period No.", "Timepoints", "Final Conc.(ng/mL)", "Sample Name", "Initial Conc.(ng/mL)", "% Difference"]
+                for col_num, header in enumerate(rep_headers): ws_rep.write(0, col_num, header, table_header_green)
+                
+                row_idx = 1
+                if num_subj > 0 and periods_list and timepoints_list:
+                    for subj_idx in range(1, num_subj + 1):
+                        subj_formatted = f"S{subj_idx:03d}"
+                        for period_val in periods_list:
+                            period_clean = period_val.strip().upper()
+                            for tp_val in timepoints_list:
+                                tp_nums = re.findall(r'\d+\.\d+|\d+', str(tp_val))
+                                tp_float = float(tp_nums[0]) if tp_nums else -1.0
+                                if "PRE" in str(tp_val).upper(): tp_float = -1.0
+                                
+                                lookup_key = (subj_idx, period_clean, tp_float)
+                                
+                                initial_conc, initial_s_name = mapped_samples.get(lookup_key, (np.nan, "Missing"))
+                                repeat_conc, repeat_s_name = repeat_samples.get(lookup_key, (np.nan, None))
+                                
+                                has_repeat = repeat_s_name is not None
+                                final_conc = repeat_conc if has_repeat else initial_conc
+                                final_s_name = repeat_s_name if has_repeat else initial_s_name
+                                
+                                display_final = "BLQ" if (pd.isna(final_conc) or (pd.notna(lloq) and final_conc < lloq)) else final_conc
+                                if final_s_name == "Missing": display_final = "M"
+                                
+                                display_initial = "BLQ" if (pd.isna(initial_conc) or (pd.notna(lloq) and initial_conc < lloq)) else initial_conc
+                                if initial_s_name == "Missing": display_initial = "M"
+                                
+                                pct_diff = ""
+                                if has_repeat and pd.notna(initial_conc) and pd.notna(repeat_conc) and display_initial != "BLQ" and display_final != "BLQ" and initial_conc > 0:
+                                    pct_diff = ((repeat_conc - initial_conc) / initial_conc) * 100
+                                    
+                                ws_rep.write(row_idx, 0, subj_formatted, data_white)
+                                ws_rep.write(row_idx, 1, period_val, data_white)
+                                ws_rep.write(row_idx, 2, f"'{tp_val}", data_white)
+                                ws_rep.write(row_idx, 3, display_final, data_white if display_final in ["BLQ", "M"] else data_white_float)
+                                ws_rep.write(row_idx, 4, final_s_name, data_white)
+                                
+                                if has_repeat:
+                                    ws_rep.write(row_idx, 5, display_initial, data_white if display_initial in ["BLQ", "M"] else data_white_float)
+                                    ws_rep.write(row_idx, 6, pct_diff, data_white_pct if pct_diff != "" else data_white)
+                                else:
+                                    ws_rep.write(row_idx, 5, "", data_white)
+                                    ws_rep.write(row_idx, 6, "", data_white)
+                                    
+                                row_idx += 1
+                else:
+                    for s_name, initial_conc in sorted(global_samples.items(), key=lambda x: extract_sort_num(x[0])):
+                        parts = re.split(r'[-_]', s_name)
+                        subj = parts[0] if len(parts) > 0 else s_name
+                        period = parts[1] if len(parts) > 1 else ""
+                        timep = parts[2] if len(parts) > 2 else ""
+                        if subj.startswith('S') and subj[1:].isdigit(): subj = f"S{int(subj[1:]):03d}"
+                        
+                        subj_nums = re.findall(r'\d+', subj)
+                        subj_int = int(subj_nums[-1]) if subj_nums else 0
+                        period_clean = period.strip().upper()
+                        tp_nums = re.findall(r'\d+\.\d+|\d+', timep)
+                        tp_float = float(tp_nums[0]) if tp_nums else -1.0
+                        if "PRE" in timep.upper(): tp_float = -1.0
+                        
+                        lookup_key = (subj_int, period_clean, tp_float)
+                        repeat_conc, repeat_s_name = repeat_samples.get(lookup_key, (np.nan, None))
+                        
+                        has_repeat = repeat_s_name is not None
+                        final_conc = repeat_conc if has_repeat else initial_conc
+                        final_s_name = repeat_s_name if has_repeat else s_name
+                        
+                        display_final = "BLQ" if (pd.isna(final_conc) or (pd.notna(lloq) and final_conc < lloq)) else final_conc
+                        display_initial = "BLQ" if (pd.isna(initial_conc) or (pd.notna(lloq) and initial_conc < lloq)) else initial_conc
+                        
+                        pct_diff = ""
+                        if has_repeat and pd.notna(initial_conc) and pd.notna(repeat_conc) and display_initial != "BLQ" and display_final != "BLQ" and initial_conc > 0:
+                            pct_diff = ((repeat_conc - initial_conc) / initial_conc) * 100
+                            
+                        ws_rep.write(row_idx, 0, subj, data_white)
+                        ws_rep.write(row_idx, 1, period, data_white)
+                        ws_rep.write(row_idx, 2, f"'{timep}", data_white)
+                        ws_rep.write(row_idx, 3, display_final, data_white if display_final == "BLQ" else data_white_float)
+                        ws_rep.write(row_idx, 4, final_s_name, data_white)
+                        if has_repeat:
+                            ws_rep.write(row_idx, 5, display_initial, data_white if display_initial == "BLQ" else data_white_float)
+                            ws_rep.write(row_idx, 6, pct_diff, data_white_pct if pct_diff != "" else data_white)
+                        else:
+                            ws_rep.write(row_idx, 5, "", data_white)
+                            ws_rep.write(row_idx, 6, "", data_white)
+                        row_idx += 1
+
+        st.success("Dashboard successfully generated with Automated Repeats Tracker!")
         st.download_button(
             label="Download Master Excel Dashboard",
             data=output.getvalue(),
