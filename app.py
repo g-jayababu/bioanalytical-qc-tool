@@ -1,7 +1,6 @@
 import streamlit as st
 import pandas as pd
 import io
-import re
 
 st.set_page_config(layout="wide")
 st.title("Bioanalytical Auto-QC Dashboard")
@@ -10,52 +9,75 @@ st.header("1. Upload Files")
 
 col1, col2 = st.columns(2)
 with col1:
-    # We added 'xlsm' here so it allows your macro file
     setup_file = st.file_uploader("Upload Setup Excel File", type=["xls", "xlsx", "xlsm"])
 with col2:
     uploaded_files = st.file_uploader("Upload TSQ Export Files", type=["csv", "xls", "xlsx"], accept_multiple_files=True)
 
 def load_data(file):
-    """Smart reader that handles CSV, XLSX, true XLS, and disguised TSV instrument exports."""
-    try:
-        file_name_lower = file.name.lower()
-        
-        if file_name_lower.endswith('.csv'):
-            return pd.read_csv(file)
-        elif file_name_lower.endswith('.xlsx') or file_name_lower.endswith('.xlsm'):
-            return pd.read_excel(file, engine='openpyxl')
-        elif file_name_lower.endswith('.xls'):
+    """Smart reader that handles true Excel files and UTF-16 TSQ text files disguised as .xls"""
+    file_name_lower = file.name.lower()
+    
+    if file_name_lower.endswith('.csv'):
+        try:
+            return pd.read_csv(file), None
+        except Exception as e:
+            return None, f"CSV Error: {str(e)}"
+            
+    elif file_name_lower.endswith('.xlsx') or file_name_lower.endswith('.xlsm'):
+        try:
+            return pd.read_excel(file, engine='openpyxl'), None
+        except Exception as e:
+            return None, f"XLSX Error: {str(e)}"
+            
+    elif file_name_lower.endswith('.xls'):
+        # 1. Try reading as a proper older Excel file
+        try:
+            return pd.read_excel(file, engine='xlrd'), None
+        except Exception as e1:
+            # 2. Try reading as standard text
             try:
-                return pd.read_excel(file, engine='xlrd')
-            except Exception:
                 file.seek(0)
-                return pd.read_csv(file, sep='\t')
-    except Exception as e:
-        return None
+                return pd.read_csv(file, sep='\t'), None
+            except Exception as e2:
+                # 3. Try reading as UTF-16 text (Standard for TSQ Quantis exports)
+                try:
+                    file.seek(0)
+                    return pd.read_csv(file, sep='\t', encoding='utf-16'), None
+                except Exception as e3:
+                    # 4. Try reading as Latin-1 text
+                    try:
+                        file.seek(0)
+                        return pd.read_csv(file, sep='\t', encoding='latin1'), None
+                    except Exception as e4:
+                        return None, f"Failed all formats. Last error: {str(e4)}"
+                        
+    return None, "Unsupported file extension."
 
 if st.button("Generate Dashboard"):
     if setup_file and uploaded_files:
         st.success("Files received! Processing data...")
         
         # --- 1. EXTRACT DATA FROM SETUP FILE ---
-        # We tell pandas to use openpyxl to read the xlsm macro file
-        setup_df = pd.read_excel(setup_file, header=None, engine='openpyxl')
-        
-        mol_name = str(setup_df.iloc[0, 1]).strip()
-        study_num = str(setup_df.iloc[1, 1]).strip()
-        lloq = pd.to_numeric(setup_df.iloc[5, 1], errors='coerce')
-        uloq = pd.to_numeric(setup_df.iloc[6, 1], errors='coerce')
-        
-        nominals = {}
-        for index in range(8, len(setup_df)):
-            cc_id = str(setup_df.iloc[index, 0]).strip().upper()
-            nom_val = pd.to_numeric(setup_df.iloc[index, 1], errors='coerce')
+        try:
+            setup_df = pd.read_excel(setup_file, header=None, engine='openpyxl')
             
-            if cc_id != 'NAN' and cc_id != 'NONE' and pd.notna(nom_val):
-                nominals[cc_id] = nom_val
+            mol_name = str(setup_df.iloc[0, 1]).strip()
+            study_num = str(setup_df.iloc[1, 1]).strip()
+            lloq = pd.to_numeric(setup_df.iloc[5, 1], errors='coerce')
+            uloq = pd.to_numeric(setup_df.iloc[6, 1], errors='coerce')
+            
+            nominals = {}
+            for index in range(8, len(setup_df)):
+                cc_id = str(setup_df.iloc[index, 0]).strip().upper()
+                nom_val = pd.to_numeric(setup_df.iloc[index, 1], errors='coerce')
+                
+                if cc_id != 'NAN' and cc_id != 'NONE' and pd.notna(nom_val):
+                    nominals[cc_id] = nom_val
 
-        st.info(f"Setup Loaded | Molecule: {mol_name} | Study: {study_num} | LLOQ: {lloq} | ULOQ: {uloq}")
-        st.write(f"Loaded {len(nominals)} nominal concentrations (e.g., {list(nominals.items())[:3]}...)")
+            st.info(f"Setup Loaded | Molecule: {mol_name} | Study: {study_num} | LLOQ: {lloq} | ULOQ: {uloq}")
+        except Exception as e:
+            st.error(f"Failed to read Setup file. Please ensure it is the correct format. Error: {str(e)}")
+            st.stop()
 
         # --- 2. PROCESS INSTRUMENT FILES ---
         global_ccqc_ids = {}
@@ -65,15 +87,33 @@ if st.button("Generate Dashboard"):
         
         for file in uploaded_files:
             file.seek(0)
-            df = load_data(file)
+            df, error_msg = load_data(file)
             
             if df is None:
-                summary_log.append({"File Name": file.name, "Status": "FAILED", "Error Details": "Could not read file."})
+                summary_log.append({"File Name": file.name, "Status": "FAILED", "Error Details": error_msg})
                 continue
                 
             df = df.dropna(how='all')
-            df.columns = [str(c).lower().strip() for c in df.columns]
             
+            # --- FIND THE TRUE HEADER ROW ---
+            # TSQ files often have 20+ rows of metadata before the actual table starts
+            header_idx = None
+            for idx, row in df.iterrows():
+                row_string = str(row.values).lower()
+                if 'sample name' in row_string or ('sample' in row_string and 'type' in row_string):
+                    header_idx = idx
+                    break
+            
+            if header_idx is not None:
+                # Set the found row as the new header and slice the dataframe
+                new_headers = df.iloc[header_idx]
+                df = df.iloc[header_idx + 1:].copy()
+                df.columns = [str(c).lower().strip() for c in new_headers]
+            else:
+                # Fallback if no specific header row is found, try to use the very first row
+                df.columns = [str(c).lower().strip() for c in df.columns]
+
+            # Map the columns flexibly
             name_col = next((c for c in df.columns if 'sample name' in c or 'sample' in c), None)
             type_col = next((c for c in df.columns if 'sample type' in c or 'type' in c), None)
             is_area_col = next((c for c in df.columns if 'is area' in c or 'istd' in c), None)
@@ -81,12 +121,19 @@ if st.button("Generate Dashboard"):
             acc_col = next((c for c in df.columns if 'accur' in c), None)
             
             if not all([name_col, type_col, is_area_col, conc_col, acc_col]):
-                summary_log.append({"File Name": file.name, "Status": "FAILED", "Error Details": "Missing critical columns."})
+                missing = []
+                if not name_col: missing.append("Sample Name")
+                if not type_col: missing.append("Sample Type")
+                if not is_area_col: missing.append("IS Area")
+                if not conc_col: missing.append("Calc Conc")
+                if not acc_col: missing.append("Accuracy")
+                summary_log.append({"File Name": file.name, "Status": "FAILED", "Error Details": f"Missing columns: {', '.join(missing)}"})
                 continue
                 
             file_dupes = []
             file_sample_dupes = []
             
+            # IS Area calculations
             cc_qc_df = df[df[type_col].str.contains('Standard|QC', case=False, na=False)].copy()
             cc_qc_df[is_area_col] = pd.to_numeric(cc_qc_df[is_area_col], errors='coerce')
             avg_is_area = cc_qc_df[is_area_col].mean()
@@ -97,6 +144,7 @@ if st.button("Generate Dashboard"):
             out_of_range_is = []
             above_uloq = []
             
+            # Row by Row Analysis
             for index, row in df.iterrows():
                 s_name = str(row[name_col]).strip().upper()
                 s_type = str(row[type_col]).strip()
@@ -124,15 +172,15 @@ if st.button("Generate Dashboard"):
                     else:
                         global_samples[s_name] = {'file': file.name, 'conc': s_conc}
 
+            # Package the clean data
             clean_df = df[[name_col, type_col, is_area_col, conc_col, acc_col]].copy()
             clean_df.columns = ["Sample Name", "Sample Type", "IS Area", "Calc. Conc.", "% Accuracy"]
-            
             excel_tabs[file.name[:31]] = clean_df
             
-            # This is the section where the bracket was missing last time
             summary_log.append({
                 "File Name": file.name, 
                 "Status": "SUCCESS", 
+                "Error Details": "Processed",
                 "Duplicate CC & QC": "Yes" if file_dupes else "No",
                 "Duplicate Samples": "Yes" if file_sample_dupes else "No",
                 "Out of Range IS Count": len(out_of_range_is),
