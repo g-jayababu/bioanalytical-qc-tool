@@ -3,3 +3,4 @@ pandas
 PyMuPDF
 docxtpl
 openpyxl
+xlrd
