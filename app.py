@@ -243,7 +243,9 @@ if st.button("Generate Dashboard"):
             bold_label = workbook.add_format({'bold': True, 'align': 'right'})
             float_fmt = workbook.add_format({'num_format': '0.000', 'align': 'center'})
             stdev_fmt = workbook.add_format({'num_format': '0.0000', 'align': 'center'})
-            pct_fmt = workbook.add_format({'num_format': '0.0%', 'align': 'center'})
+            
+            # Format %CV and %Accuracy to exactly 2 digits (e.g. 105.15) instead of standard Excel percentages
+            pct_fmt = workbook.add_format({'num_format': '0.00', 'align': 'center'})
             
             for sheet_name in writer.sheets:
                 worksheet = writer.sheets[sheet_name]
@@ -277,8 +279,12 @@ if st.button("Generate Dashboard"):
                         
                         ws.write_formula(stat_row, col_num, f"=IFERROR(AVERAGE({data_range}), \"\")", float_fmt)
                         ws.write_formula(stat_row + 1, col_num, f"=IFERROR(STDEV({data_range}), \"\")", stdev_fmt)
-                        ws.write_formula(stat_row + 2, col_num, f"=IFERROR(({col_letter}{stat_row + 2}/{col_letter}{stat_row + 1}), \"\")", pct_fmt)
-                        ws.write_formula(stat_row + 3, col_num, f"=IFERROR(({col_letter}{stat_row + 1}/{col_letter}2), \"\")", pct_fmt)
+                        
+                        # Corrected CV formula: (SD / Mean) * 100
+                        ws.write_formula(stat_row + 2, col_num, f"=IFERROR(({col_letter}{stat_row + 1}/{col_letter}{stat_row})*100, \"\")", pct_fmt)
+                        
+                        # Corrected Accuracy formula: (Mean / Nominal) * 100
+                        ws.write_formula(stat_row + 3, col_num, f"=IFERROR(({col_letter}{stat_row}/{col_letter}2)*100, \"\")", pct_fmt)
                         
                         ws.conditional_format(data_range, {
                             'type': 'formula',
