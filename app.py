@@ -17,9 +17,13 @@ def load_data(file):
     """Smart reader that handles true Excel files and UTF-16 TSQ text files disguised as .xls"""
     file_name_lower = file.name.lower()
     
+    # We use names=range(100) to force pandas to accept varying column counts
+    # This prevents the "Expected 1 fields, saw 6" tokenizing crash
+    dummy_cols = list(range(100))
+    
     if file_name_lower.endswith('.csv'):
         try:
-            return pd.read_csv(file), None
+            return pd.read_csv(file, names=dummy_cols, on_bad_lines='skip'), None
         except Exception as e:
             return None, f"CSV Error: {str(e)}"
             
@@ -30,24 +34,20 @@ def load_data(file):
             return None, f"XLSX Error: {str(e)}"
             
     elif file_name_lower.endswith('.xls'):
-        # 1. Try reading as a proper older Excel file
         try:
             return pd.read_excel(file, engine='xlrd'), None
         except Exception as e1:
-            # 2. Try reading as standard text
             try:
                 file.seek(0)
-                return pd.read_csv(file, sep='\t'), None
+                return pd.read_csv(file, sep='\t', names=dummy_cols, on_bad_lines='skip'), None
             except Exception as e2:
-                # 3. Try reading as UTF-16 text (Standard for TSQ Quantis exports)
                 try:
                     file.seek(0)
-                    return pd.read_csv(file, sep='\t', encoding='utf-16'), None
+                    return pd.read_csv(file, sep='\t', encoding='utf-16', names=dummy_cols, on_bad_lines='skip'), None
                 except Exception as e3:
-                    # 4. Try reading as Latin-1 text
                     try:
                         file.seek(0)
-                        return pd.read_csv(file, sep='\t', encoding='latin1'), None
+                        return pd.read_csv(file, sep='\t', encoding='latin1', names=dummy_cols, on_bad_lines='skip'), None
                     except Exception as e4:
                         return None, f"Failed all formats. Last error: {str(e4)}"
                         
@@ -60,7 +60,6 @@ if st.button("Generate Dashboard"):
         # --- 1. EXTRACT DATA FROM SETUP FILE ---
         try:
             setup_df = pd.read_excel(setup_file, header=None, engine='openpyxl')
-            
             mol_name = str(setup_df.iloc[0, 1]).strip()
             study_num = str(setup_df.iloc[1, 1]).strip()
             lloq = pd.to_numeric(setup_df.iloc[5, 1], errors='coerce')
@@ -70,13 +69,11 @@ if st.button("Generate Dashboard"):
             for index in range(8, len(setup_df)):
                 cc_id = str(setup_df.iloc[index, 0]).strip().upper()
                 nom_val = pd.to_numeric(setup_df.iloc[index, 1], errors='coerce')
-                
                 if cc_id != 'NAN' and cc_id != 'NONE' and pd.notna(nom_val):
                     nominals[cc_id] = nom_val
-
             st.info(f"Setup Loaded | Molecule: {mol_name} | Study: {study_num} | LLOQ: {lloq} | ULOQ: {uloq}")
         except Exception as e:
-            st.error(f"Failed to read Setup file. Please ensure it is the correct format. Error: {str(e)}")
+            st.error(f"Failed to read Setup file. Error: {str(e)}")
             st.stop()
 
         # --- 2. PROCESS INSTRUMENT FILES ---
@@ -93,10 +90,12 @@ if st.button("Generate Dashboard"):
                 summary_log.append({"File Name": file.name, "Status": "FAILED", "Error Details": error_msg})
                 continue
                 
+            # Clean up the dummy columns and rows
             df = df.dropna(how='all')
+            df = df.dropna(how='all', axis=1)
+            df = df.reset_index(drop=True)
             
             # --- FIND THE TRUE HEADER ROW ---
-            # TSQ files often have 20+ rows of metadata before the actual table starts
             header_idx = None
             for idx, row in df.iterrows():
                 row_string = str(row.values).lower()
@@ -105,15 +104,15 @@ if st.button("Generate Dashboard"):
                     break
             
             if header_idx is not None:
-                # Set the found row as the new header and slice the dataframe
                 new_headers = df.iloc[header_idx]
                 df = df.iloc[header_idx + 1:].copy()
                 df.columns = [str(c).lower().strip() for c in new_headers]
             else:
-                # Fallback if no specific header row is found, try to use the very first row
                 df.columns = [str(c).lower().strip() for c in df.columns]
 
-            # Map the columns flexibly
+            # Drop any remaining dummy columns that evaluate to 'nan'
+            df = df.loc[:, ~df.columns.str.contains('^nan$', case=False, na=False)]
+
             name_col = next((c for c in df.columns if 'sample name' in c or 'sample' in c), None)
             type_col = next((c for c in df.columns if 'sample type' in c or 'type' in c), None)
             is_area_col = next((c for c in df.columns if 'is area' in c or 'istd' in c), None)
@@ -133,7 +132,6 @@ if st.button("Generate Dashboard"):
             file_dupes = []
             file_sample_dupes = []
             
-            # IS Area calculations
             cc_qc_df = df[df[type_col].str.contains('Standard|QC', case=False, na=False)].copy()
             cc_qc_df[is_area_col] = pd.to_numeric(cc_qc_df[is_area_col], errors='coerce')
             avg_is_area = cc_qc_df[is_area_col].mean()
@@ -144,7 +142,6 @@ if st.button("Generate Dashboard"):
             out_of_range_is = []
             above_uloq = []
             
-            # Row by Row Analysis
             for index, row in df.iterrows():
                 s_name = str(row[name_col]).strip().upper()
                 s_type = str(row[type_col]).strip()
@@ -172,7 +169,6 @@ if st.button("Generate Dashboard"):
                     else:
                         global_samples[s_name] = {'file': file.name, 'conc': s_conc}
 
-            # Package the clean data
             clean_df = df[[name_col, type_col, is_area_col, conc_col, acc_col]].copy()
             clean_df.columns = ["Sample Name", "Sample Type", "IS Area", "Calc. Conc.", "% Accuracy"]
             excel_tabs[file.name[:31]] = clean_df
