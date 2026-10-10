@@ -10,19 +10,19 @@ st.header("1. Upload Files")
 
 col1, col2 = st.columns(2)
 with col1:
-    setup_file = st.file_uploader("Upload Setup Excel File", type=["xls", "xlsx"])
+    # We added 'xlsm' here so it allows your macro file
+    setup_file = st.file_uploader("Upload Setup Excel File", type=["xls", "xlsx", "xlsm"])
 with col2:
     uploaded_files = st.file_uploader("Upload TSQ Export Files", type=["csv", "xls", "xlsx"], accept_multiple_files=True)
 
 def load_data(file):
     """Smart reader that handles CSV, XLSX, true XLS, and disguised TSV instrument exports."""
     try:
-        # Convert file name to lowercase to handle .XLS vs .xls
         file_name_lower = file.name.lower()
         
         if file_name_lower.endswith('.csv'):
             return pd.read_csv(file)
-        elif file_name_lower.endswith('.xlsx'):
+        elif file_name_lower.endswith('.xlsx') or file_name_lower.endswith('.xlsm'):
             return pd.read_excel(file, engine='openpyxl')
         elif file_name_lower.endswith('.xls'):
             try:
@@ -38,7 +38,8 @@ if st.button("Generate Dashboard"):
         st.success("Files received! Processing data...")
         
         # --- 1. EXTRACT DATA FROM SETUP FILE ---
-        setup_df = pd.read_excel(setup_file, header=None)
+        # We tell pandas to use openpyxl to read the xlsm macro file
+        setup_df = pd.read_excel(setup_file, header=None, engine='openpyxl')
         
         mol_name = str(setup_df.iloc[0, 1]).strip()
         study_num = str(setup_df.iloc[1, 1]).strip()
@@ -128,6 +129,7 @@ if st.button("Generate Dashboard"):
             
             excel_tabs[file.name[:31]] = clean_df
             
+            # This is the section where the bracket was missing last time
             summary_log.append({
                 "File Name": file.name, 
                 "Status": "SUCCESS", 
