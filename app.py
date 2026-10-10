@@ -1,5 +1,6 @@
 import streamlit as st
 import pandas as pd
+import numpy as np
 import io
 import re
 from xlsxwriter.utility import xl_col_to_name
@@ -13,7 +14,7 @@ col1, col2 = st.columns(2)
 with col1:
     setup_file = st.file_uploader("Upload Setup Excel File", type=["xls", "xlsx", "xlsm"])
 with col2:
-    uploaded_files = st.file_uploader("Upload TSQ Export Files", type=["csv", "xls", "xlsx"], accept_multiple_files=True)
+    uploaded_files = st.file_uploader("Upload TSQ Quantis Plus Export Files", type=["csv", "xls", "xlsx"], accept_multiple_files=True)
 
 def load_data(file):
     """Smart reader that handles true Excel files and UTF-16 TSQ text files disguised as .xls"""
@@ -49,6 +50,10 @@ def load_data(file):
                         return None, f"Failed all formats. Last error: {str(e4)}"
     return None, "Unsupported file extension."
 
+def extract_sort_num(val):
+    nums = re.findall(r'\d+', str(val))
+    return int(nums[-1]) if nums else 0
+
 if st.button("Generate Dashboard"):
     if setup_file and uploaded_files:
         st.success("Files received! Processing data...")
@@ -58,6 +63,13 @@ if st.button("Generate Dashboard"):
             setup_df = pd.read_excel(setup_file, header=None, engine='openpyxl')
             mol_name = str(setup_df.iloc[0, 1]).strip()
             study_num = str(setup_df.iloc[1, 1]).strip()
+            
+            # Extract additional VBA setup variables for Concentration Data tab
+            num_subj_raw = setup_df.iloc[2, 1]
+            num_subj = int(pd.to_numeric(num_subj_raw, errors='coerce')) if pd.notna(num_subj_raw) else 0
+            periods = str(setup_df.iloc[3, 1]).strip()
+            timepoints = str(setup_df.iloc[4, 1]).strip()
+            
             lloq = pd.to_numeric(setup_df.iloc[5, 1], errors='coerce')
             uloq = pd.to_numeric(setup_df.iloc[6, 1], errors='coerce')
             
@@ -73,7 +85,7 @@ if st.button("Generate Dashboard"):
                         std_names.append(cc_id)
             
             std_names = sorted(std_names)
-            st.info(f"Setup Loaded | Molecule: {mol_name} | Study: {study_num}")
+            st.info(f"Setup Loaded | Molecule: {mol_name} | Study: {study_num} | LLOQ: {lloq} | ULOQ: {uloq}")
         except Exception as e:
             st.error(f"Failed to read Setup file. Error: {str(e)}")
             st.stop()
@@ -83,6 +95,7 @@ if st.button("Generate Dashboard"):
         excel_tabs = {}
         cc_file_data = []
         qc_file_data = []
+        global_samples = {}
         
         for file in uploaded_files:
             file.seek(0)
@@ -185,35 +198,41 @@ if st.button("Generate Dashboard"):
                 s_type = str(row[type_col]).strip().upper()
                 conc = pd.to_numeric(row[conc_col], errors='coerce')
                 s_is_area = pd.to_numeric(row[is_area_col], errors='coerce')
-                if pd.isna(conc): conc = ""
                 
+                # IS Plot Tracking
                 inj_order_list.append(current_inj)
                 if pd.notna(s_is_area) and pd.notna(avg_is_area) and avg_is_area > 0:
                     pct_diff = (s_is_area / avg_is_area) * 100 - 100
                     if 'STANDARD' in s_type or 'QC' in s_type or 'QUALITY' in s_type:
-                        ccqc_is_list.append(pct_diff); blank_is_list.append(None); samp_is_list.append(None)
+                        ccqc_is_list.append(pct_diff); blank_is_list.append(np.nan); samp_is_list.append(np.nan)
                     elif 'BLANK' in s_type or '-BLK' in s_name or '+IS' in s_name:
-                        ccqc_is_list.append(None); blank_is_list.append(pct_diff); samp_is_list.append(None)
+                        ccqc_is_list.append(np.nan); blank_is_list.append(pct_diff); samp_is_list.append(np.nan)
                     else:
-                        ccqc_is_list.append(None); blank_is_list.append(None); samp_is_list.append(pct_diff)
+                        ccqc_is_list.append(np.nan); blank_is_list.append(np.nan); samp_is_list.append(pct_diff)
                 else:
-                    ccqc_is_list.append(None); blank_is_list.append(None); samp_is_list.append(None)
+                    ccqc_is_list.append(np.nan); blank_is_list.append(np.nan); samp_is_list.append(np.nan)
                 
                 current_inj += 1
                 
+                # Standards Mapping
                 for std in std_names:
                     if std in s_name or std.replace("-", "") in s_name:
-                        file_cc_dict[std] = conc
+                        file_cc_dict[std] = conc if pd.notna(conc) else ""
                         break
                 
+                # QCs Mapping
                 if 'LQC' in s_name:
-                    lqc_list.append(conc); lqc_ids.append(s_name)
+                    lqc_list.append(conc if pd.notna(conc) else ""); lqc_ids.append(s_name)
                 elif 'MMQC' in s_name:
-                    mmqc_list.append(conc); mmqc_ids.append(s_name)
+                    mmqc_list.append(conc if pd.notna(conc) else ""); mmqc_ids.append(s_name)
                 elif 'MQC' in s_name and 'MMQC' not in s_name:
-                    mqc_list.append(conc); mqc_ids.append(s_name)
+                    mqc_list.append(conc if pd.notna(conc) else ""); mqc_ids.append(s_name)
                 elif 'HQC' in s_name:
-                    hqc_list.append(conc); hqc_ids.append(s_name)
+                    hqc_list.append(conc if pd.notna(conc) else ""); hqc_ids.append(s_name)
+                    
+                # Store Unknowns for the Concentration Data Tab (Exclude CC/QC/AQSTD/BLK)
+                if 'UNKNOWN' in s_type and 'AQSTD' not in s_name and 'BLK' not in s_name and 'BLANK' not in s_name and '+IS' not in s_name:
+                    global_samples[s_name] = conc
 
             file_cc_dict['Slope'] = "" if pd.isna(slope) else slope
             file_cc_dict['Intercept'] = "" if pd.isna(intercept) else intercept
@@ -240,19 +259,14 @@ if st.button("Generate Dashboard"):
             clean_df["Blank IS%"] = blank_is_list
             clean_df["Sample IS%"] = samp_is_list
             
-            # Clean sheet name for Excel (max 31 chars, no illegal characters)
             safe_sheet_name = re.sub(r'[\\/*?:\[\]]', '_', file.name)[:31]
             excel_tabs[safe_sheet_name] = clean_df
             
             summary_log.append({"File Name": file.name, "Status": "SUCCESS", "Error Details": "Processed"})
 
-        # --- 3. CONSTRUCT AND SORT VBA-STYLE DATAFRAMES ---
+        # --- 3. CONSTRUCT VBA-STYLE SUMMARY DATAFRAMES ---
         excel_tabs["Summary"] = pd.DataFrame(summary_log)
         
-        def extract_sort_num(val):
-            nums = re.findall(r'\d+', str(val))
-            return int(nums[-1]) if nums else 0
-
         if cc_file_data:
             cc_df_data = pd.DataFrame(cc_file_data)
             cc_df_data['Sort_Num'] = cc_df_data['CCID'].apply(extract_sort_num)
@@ -294,38 +308,37 @@ if st.button("Generate Dashboard"):
             qc_df = pd.concat([pd.DataFrame([row_nom_qc, row_low_qc, row_up_qc]), qc_df_data], ignore_index=True)
             excel_tabs["QC"] = qc_df[qc_columns]
 
-        # --- 4. EXPORT TO EXCEL WITH XlsxWriter STATS & FORMATTING ---
+        # --- 4. EXPORT TO EXCEL WITH VBA TIMES NEW ROMAN FORMATTING ---
         output = io.BytesIO()
         with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
             
-            # WRITE ALL SHEETS TO THE EXCEL FILE FIRST
-            if "Summary" in excel_tabs:
-                excel_tabs["Summary"].to_excel(writer, sheet_name="Summary", index=False)
-                
+            excel_tabs["Summary"].to_excel(writer, sheet_name="Summary", index=False)
+            if "CC" in excel_tabs: excel_tabs["CC"].to_excel(writer, sheet_name="CC", index=False)
+            if "QC" in excel_tabs: excel_tabs["QC"].to_excel(writer, sheet_name="QC", index=False)
+            
             for sheet_name, df_tab in excel_tabs.items():
                 if sheet_name not in ["Summary", "CC", "QC"]:
                     df_tab.to_excel(writer, sheet_name=sheet_name, index=False)
-                    
-            if "CC" in excel_tabs: 
-                excel_tabs["CC"].to_excel(writer, sheet_name="CC", index=False)
-            if "QC" in excel_tabs: 
-                excel_tabs["QC"].to_excel(writer, sheet_name="QC", index=False)
             
             workbook = writer.book
             
-            # --- DEFINE FORMATTING STYLES ---
-            header_format = workbook.add_format({'bold': True, 'bg_color': '#C6E0B4', 'border': 1, 'align': 'center', 'valign': 'vcenter'})
-            yellow_flag = workbook.add_format({'bg_color': '#FFFF00', 'bold': True, 'font_color': '#FF0000'})
-            bold_label = workbook.add_format({'bold': True, 'align': 'right'})
+            # --- DEFINE TIMES NEW ROMAN FORMATTING STYLES ---
+            tnr = {'font_name': 'Times New Roman', 'font_size': 10}
             
-            general_fmt = workbook.add_format({'align': 'center'})
-            conc_fmt = workbook.add_format({'num_format': '0.000', 'align': 'center'})
-            r_fmt = workbook.add_format({'num_format': '0.0000', 'align': 'center'})
+            header_format = workbook.add_format({**tnr, 'bold': True, 'bg_color': '#C6E0B4', 'border': 1, 'align': 'center', 'valign': 'vcenter'})
+            yellow_flag = workbook.add_format({**tnr, 'bg_color': '#FFFF00', 'bold': True, 'font_color': '#FF0000'})
+            bold_label = workbook.add_format({**tnr, 'bold': True, 'align': 'right'})
             
-            float_fmt = workbook.add_format({'num_format': '0.000', 'align': 'center'})
-            stdev_fmt = workbook.add_format({'num_format': '0.0000', 'align': 'center'})
-            pct_fmt = workbook.add_format({'num_format': '0.00', 'align': 'center'})
-            merge_fmt = workbook.add_format({'align': 'center', 'valign': 'vcenter'})
+            general_fmt = workbook.add_format({**tnr, 'align': 'center', 'valign': 'vcenter'})
+            conc_fmt = workbook.add_format({**tnr, 'num_format': '0.000', 'align': 'center', 'valign': 'vcenter'})
+            r_fmt = workbook.add_format({**tnr, 'num_format': '0.0000', 'align': 'center', 'valign': 'vcenter'})
+            
+            stdev_fmt = workbook.add_format({**tnr, 'num_format': '0.0000', 'align': 'center', 'valign': 'vcenter'})
+            pct_fmt = workbook.add_format({**tnr, 'num_format': '0.00', 'align': 'center', 'valign': 'vcenter'})
+            merge_fmt = workbook.add_format({**tnr, 'align': 'center', 'valign': 'vcenter'})
+            
+            # Formats for Concentration Data Tab
+            no_border_fmt = workbook.add_format({**tnr, 'align': 'left', 'valign': 'vcenter', 'bold': True})
             
             # --- APPLY COLUMN FORMATTING AND CHARTS ---
             for sheet_name, df_tab in excel_tabs.items():
@@ -353,14 +366,10 @@ if st.button("Generate Dashboard"):
                     worksheet.set_column(4, 7, 15, conc_fmt)
                     
                 else:
-                    # INDIVIDUAL BATCH TABS - Format Data
                     worksheet.set_column('B:E', 15, general_fmt)
-                    
-                    # Hide the calculation columns using explicitly numeric ranges (Columns 5 through 8)
                     worksheet.set_column(5, 8, None, None, {'hidden': True})
                     
                     max_row = len(df_tab)
-                    
                     if max_row > 0:
                         chart = workbook.add_chart({'type': 'scatter'})
                         
@@ -371,7 +380,6 @@ if st.button("Generate Dashboard"):
                             'marker': {'type': 'circle', 'size': 6, 'fill': {'color': '#5B9BD5'}, 'border': {'color': '#5B9BD5'}},
                             'line':   {'none': True}
                         })
-                        
                         chart.add_series({
                             'name': 'Blank',
                             'categories': [sheet_name, 1, 5, max_row, 5],
@@ -379,7 +387,6 @@ if st.button("Generate Dashboard"):
                             'marker': {'type': 'circle', 'size': 6, 'fill': {'color': '#ED7D31'}, 'border': {'color': '#ED7D31'}},
                             'line':   {'none': True}
                         })
-                        
                         chart.add_series({
                             'name': 'CCQC',
                             'categories': [sheet_name, 1, 5, max_row, 5],
@@ -388,18 +395,16 @@ if st.button("Generate Dashboard"):
                             'line':   {'none': True}
                         })
                         
-                        chart.set_title({'name': 'IS Variation Plot', 'name_font': {'size': 12, 'name': 'Arial'}})
-                        chart.set_x_axis({'name': 'Injection Order', 'major_gridlines': {'visible': False}})
-                        chart.set_y_axis({'name': '% Difference from Mean IS', 'major_gridlines': {'visible': True}, 'num_format': '0.00'})
-                        chart.set_legend({'position': 'right'})
+                        chart.set_title({'name': 'IS Variation Plot', 'name_font': {'size': 12, 'name': 'Times New Roman'}})
+                        chart.set_x_axis({'name': 'Injection Order', 'name_font': {'size': 10, 'name': 'Times New Roman'}, 'num_font': {'name': 'Times New Roman'}, 'major_gridlines': {'visible': False}})
+                        chart.set_y_axis({'name': '% Difference from Mean IS', 'name_font': {'size': 10, 'name': 'Times New Roman'}, 'num_font': {'name': 'Times New Roman'}, 'major_gridlines': {'visible': True}, 'num_format': '0.00'})
+                        chart.set_legend({'position': 'right', 'font': {'name': 'Times New Roman', 'size': 10}})
                         chart.set_size({'width': 425, 'height': 227})
                         
-                        # CRITICAL: Force Excel to render plot data located in the hidden columns
                         chart.show_hidden_data()
-                        
                         worksheet.insert_chart('K2', chart)
 
-            # --- INJECT STATS & MERGE FORMATTING ---
+            # --- INJECT STATS & MERGE FORMATTING FOR CC AND QC ---
             for target_sheet in ["CC", "QC"]:
                 if target_sheet in excel_tabs:
                     ws = writer.sheets[target_sheet]
@@ -453,7 +458,57 @@ if st.button("Generate Dashboard"):
                             'format': yellow_flag
                         })
 
-        st.success("Dashboard successfully generated with Visible IS Variation Plots!")
+            # --- BUILD CONCENTRATION DATA TAB MATCHING VBA ---
+            ws_conc = workbook.add_worksheet("Concentration Data")
+            ws_conc.set_column('A:E', 20, general_fmt)
+            
+            # Top Headers
+            ws_conc.merge_range('A1:B1', "Molecule Name", header_format)
+            ws_conc.merge_range('C1:D1', mol_name, header_format)
+            ws_conc.merge_range('A2:B2', "Study Number", header_format)
+            ws_conc.merge_range('C2:D2', study_num, header_format)
+            ws_conc.merge_range('A3:B3', "CC range", header_format)
+            
+            lloq_fmt = f"{lloq:.3f}" if pd.notna(lloq) else "1.000"
+            uloq_fmt = f"{uloq:.3f}" if pd.notna(uloq) else "100.000"
+            ws_conc.merge_range('C3:D3', f"{lloq_fmt} ng/mL to {uloq_fmt} ng/mL", header_format)
+            
+            # Grid Headers
+            conc_headers = ["Subject No.", "Period No.", "Timepoints", "Conc.(ng/mL)", "Sample Name"]
+            for col_num, header in enumerate(conc_headers):
+                ws_conc.write(4, col_num, header, header_format)
+                
+            row_idx = 5
+            
+            # Parse unknown sample strings to emulate VBA grid population
+            for s_name, conc in sorted(global_samples.items(), key=lambda x: extract_sort_num(x[0])):
+                # Apply BLQ logic
+                if pd.isna(conc) or (pd.notna(lloq) and conc < lloq):
+                    display_conc = "BLQ"
+                else:
+                    display_conc = conc
+                
+                # Heuristic split for Subject, Period, Timepoint based on common delimiters (-, _)
+                parts = re.split(r'[-_]', s_name)
+                subj = parts[0] if len(parts) > 0 else s_name
+                period = parts[1] if len(parts) > 1 else ""
+                timep = parts[2] if len(parts) > 2 else ""
+                
+                # Format to match VBA Subject Prefix mapping if possible
+                if subj.startswith('S') and subj[1:].isdigit():
+                    subj = f"S{int(subj[1:]):02d}"
+                    
+                ws_conc.write(row_idx, 0, subj, general_fmt)
+                ws_conc.write(row_idx, 1, period, general_fmt)
+                ws_conc.write(row_idx, 2, f"'{timep}", general_fmt)
+                if display_conc == "BLQ":
+                    ws_conc.write(row_idx, 3, display_conc, general_fmt)
+                else:
+                    ws_conc.write(row_idx, 3, display_conc, conc_fmt)
+                ws_conc.write(row_idx, 4, s_name, general_fmt)
+                row_idx += 1
+
+        st.success("Dashboard successfully generated with Concentration Data & Times New Roman Formatting!")
         st.download_button(
             label="Download Master Excel Dashboard",
             data=output.getvalue(),
