@@ -129,7 +129,6 @@ if st.button("Generate Dashboard"):
             is_area_col = next((c for c in df.columns if ('is area' in c or 'is peak area' in c or 'istd' in c) and 'ratio' not in c and 'analyte' not in c), None)
             conc_col = next((c for c in df.columns if 'calc' in c and 'conc' in c), None)
             
-            # Identify the Date column dynamically from the data table
             date_col = next((c for c in df.columns if 'acq date' in c or 'acquisition date' in c or 'date/time' in c or 'date' in c), None)
             acq_date = ""
             
@@ -140,7 +139,6 @@ if st.button("Generate Dashboard"):
                 except Exception:
                     acq_date = raw_date
                     
-            # Fallback to today's date if no valid date was found in the file
             if not acq_date:
                 acq_date = pd.Timestamp.now().strftime('%d-%b-%Y').upper()
             
@@ -281,6 +279,9 @@ if st.button("Generate Dashboard"):
             stdev_fmt = workbook.add_format({'num_format': '0.0000', 'align': 'center'})
             pct_fmt = workbook.add_format({'num_format': '0.00', 'align': 'center'})
             
+            # Merged cell format for Date and Subject IDs
+            merge_fmt = workbook.add_format({'align': 'center', 'valign': 'vcenter'})
+            
             # --- APPLY COLUMN FORMATTING ---
             for sheet_name in writer.sheets:
                 worksheet = writer.sheets[sheet_name]
@@ -308,7 +309,7 @@ if st.button("Generate Dashboard"):
                     worksheet.set_column(1, 3, 15, general_fmt)
                     worksheet.set_column(4, 7, 15, conc_fmt)
 
-            # --- INJECT STATS & CONDITIONAL FORMATTING ---
+            # --- INJECT STATS & MERGE FORMATTING ---
             for target_sheet in ["CC", "QC"]:
                 if target_sheet in excel_tabs:
                     ws = writer.sheets[target_sheet]
@@ -317,6 +318,30 @@ if st.button("Generate Dashboard"):
                     num_rows = len(df_target)
                     stat_row = num_rows + 1 
                     
+                    # Merge Metadata Headers (Rows 0 to 3)
+                    ws.merge_range(0, 0, 3, 0, df_target.columns[0], header_format)
+                    ws.merge_range(0, 1, 3, 1, df_target.columns[1], header_format)
+                    
+                    if target_sheet == "CC":
+                        ws.merge_range(0, 2, 3, 2, df_target.columns[2], header_format)
+                        end_c = len(df_target.columns)
+                        ws.merge_range(0, end_c - 3, 3, end_c - 3, df_target.columns[end_c - 3], header_format)
+                        ws.merge_range(0, end_c - 2, 3, end_c - 2, df_target.columns[end_c - 2], header_format)
+                        ws.merge_range(0, end_c - 1, 3, end_c - 1, df_target.columns[end_c - 1], header_format)
+                        
+                    elif target_sheet == "QC":
+                        # Merge Date and Subject ID down the 4-row QC blocks
+                        for r in range(4, num_rows + 1, 4):
+                            if r + 3 <= num_rows:
+                                date_val = df_target.iloc[r-1, 0]
+                                subj_val = df_target.iloc[r-1, 1]
+                                date_val = "" if pd.isna(date_val) else str(date_val)
+                                subj_val = "" if pd.isna(subj_val) else str(subj_val)
+                                
+                                ws.merge_range(r, 0, r+3, 0, date_val, merge_fmt)
+                                ws.merge_range(r, 1, r+3, 1, subj_val, merge_fmt)
+                    
+                    # Write Statistics Labels
                     label_col = 2 if target_sheet == "CC" else 1
                     ws.write(stat_row, label_col, "Mean", bold_label)
                     ws.write(stat_row + 1, label_col, "SD", bold_label)
@@ -326,6 +351,7 @@ if st.button("Generate Dashboard"):
                     start_col = 3 if target_sheet == "CC" else 4
                     end_col = len(std_names) + 3 if target_sheet == "CC" else 8
                     
+                    # Write Statistics Formulas
                     for col_num in range(start_col, end_col):
                         col_letter = xl_col_to_name(col_num)
                         
@@ -342,7 +368,7 @@ if st.button("Generate Dashboard"):
                             'format': yellow_flag
                         })
 
-        st.success("Dashboard successfully generated with Date Extraction formatting!")
+        st.success("Dashboard successfully generated with merged rows!")
         st.download_button(
             label="Download Master Excel Dashboard",
             data=output.getvalue(),
