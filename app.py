@@ -128,6 +128,7 @@ if st.button("Generate Dashboard"):
             type_col = next((c for c in df.columns if 'sample type' in c or 'type' in c), None)
             is_area_col = next((c for c in df.columns if ('is area' in c or 'is peak area' in c or 'istd' in c) and 'ratio' not in c and 'analyte' not in c), None)
             conc_col = next((c for c in df.columns if 'calc' in c and 'conc' in c), None)
+            acc_col = next((c for c in df.columns if 'accur' in c), None)
             
             date_col = next((c for c in df.columns if 'acq date' in c or 'acquisition date' in c or 'date/time' in c or 'date' in c), None)
             acq_date = ""
@@ -146,6 +147,7 @@ if st.button("Generate Dashboard"):
                 summary_log.append({"File Name": file.name, "Status": "FAILED", "Error Details": "Missing critical data columns."})
                 continue
             
+            # Subj ID extraction
             subj_id = "S1"
             match = re.search(r'(S\d+(?:[-_]S\d+)*)', file.name, re.IGNORECASE)
             if match:
@@ -169,16 +171,47 @@ if st.button("Generate Dashboard"):
             lqc_list, mmqc_list, mqc_list, hqc_list = [], [], [], []
             lqc_ids, mmqc_ids, mqc_ids, hqc_ids = [], [], [], []
             
+            # Arrays for IS Scatter Plot Variations
+            inj_order_list = []
+            ccqc_is_list = []
+            blank_is_list = []
+            samp_is_list = []
+            current_inj = 1
+            
+            # Calculate Mean IS Area for CCs and QCs to establish baseline
+            cc_qc_df = df[df[type_col].str.contains('Standard|QC|Quality', case=False, na=False)].copy()
+            cc_qc_df[is_area_col] = pd.to_numeric(cc_qc_df[is_area_col], errors='coerce')
+            avg_is_area = cc_qc_df[is_area_col].mean()
+            
             for index, row in df.iterrows():
                 s_name = str(row[name_col]).strip().upper()
+                s_type = str(row[type_col]).strip().upper()
                 conc = pd.to_numeric(row[conc_col], errors='coerce')
+                s_is_area = pd.to_numeric(row[is_area_col], errors='coerce')
                 if pd.isna(conc): conc = ""
                 
+                # IS Plot Calculation Engine
+                inj_order_list.append(current_inj)
+                if pd.notna(s_is_area) and pd.notna(avg_is_area) and avg_is_area > 0:
+                    pct_diff = (s_is_area / avg_is_area) * 100 - 100
+                    if 'STANDARD' in s_type or 'QC' in s_type or 'QUALITY' in s_type:
+                        ccqc_is_list.append(pct_diff); blank_is_list.append(None); samp_is_list.append(None)
+                    elif 'BLANK' in s_type or '-BLK' in s_name or '+IS' in s_name:
+                        ccqc_is_list.append(None); blank_is_list.append(pct_diff); samp_is_list.append(None)
+                    else:
+                        ccqc_is_list.append(None); blank_is_list.append(None); samp_is_list.append(pct_diff)
+                else:
+                    ccqc_is_list.append(None); blank_is_list.append(None); samp_is_list.append(None)
+                
+                current_inj += 1
+                
+                # Map Standards
                 for std in std_names:
                     if std in s_name or std.replace("-", "") in s_name:
                         file_cc_dict[std] = conc
                         break
                 
+                # Map QCs
                 if 'LQC' in s_name:
                     lqc_list.append(conc); lqc_ids.append(s_name)
                 elif 'MMQC' in s_name:
@@ -206,6 +239,16 @@ if st.button("Generate Dashboard"):
                 }
                 qc_file_data.append(q_dict)
                 
+            # Build Clean Individual Batch Sheet
+            clean_df = df[[name_col, type_col, is_area_col, conc_col, acc_col]].copy()
+            clean_df.columns = ["Sample Name", "Sample Type", "IS Area", "Calc. Conc.", "% Accuracy"]
+            # Append hidden chart calculation columns
+            clean_df["Inj Order"] = inj_order_list
+            clean_df["CCQC IS%"] = ccqc_is_list
+            clean_df["Blank IS%"] = blank_is_list
+            clean_df["Sample IS%"] = samp_is_list
+            excel_tabs[file.name[:31]] = clean_df
+            
             summary_log.append({"File Name": file.name, "Status": "SUCCESS", "Error Details": "Processed"})
 
         # --- 3. CONSTRUCT AND SORT VBA-STYLE DATAFRAMES ---
@@ -278,11 +321,9 @@ if st.button("Generate Dashboard"):
             float_fmt = workbook.add_format({'num_format': '0.000', 'align': 'center'})
             stdev_fmt = workbook.add_format({'num_format': '0.0000', 'align': 'center'})
             pct_fmt = workbook.add_format({'num_format': '0.00', 'align': 'center'})
-            
-            # Merged cell format for Date and Subject IDs
             merge_fmt = workbook.add_format({'align': 'center', 'valign': 'vcenter'})
             
-            # --- APPLY COLUMN FORMATTING ---
+            # --- APPLY COLUMN FORMATTING AND CHARTS ---
             for sheet_name in writer.sheets:
                 worksheet = writer.sheets[sheet_name]
                 
@@ -296,18 +337,65 @@ if st.button("Generate Dashboard"):
                     
                 elif sheet_name == "CC":
                     worksheet.set_column(1, 2, 15, general_fmt)
-                    
                     start_c = 3
                     end_c = 3 + len(std_names) - 1
                     if end_c >= start_c:
                         worksheet.set_column(start_c, end_c, 15, conc_fmt)
-                        
                     worksheet.set_column(end_c + 1, end_c + 2, 15, general_fmt)
                     worksheet.set_column(end_c + 3, end_c + 3, 15, r_fmt)
                     
                 elif sheet_name == "QC":
                     worksheet.set_column(1, 3, 15, general_fmt)
                     worksheet.set_column(4, 7, 15, conc_fmt)
+                    
+                else:
+                    # INDIVIDUAL BATCH TABS - Format and Insert Charts
+                    worksheet.set_column('B:E', 15, general_fmt)
+                    
+                    # Hide the calculation columns (F through I / Index 5 to 8)
+                    worksheet.set_column('F:I', None, None, {'hidden': True})
+                    
+                    df_target = excel_tabs[sheet_name]
+                    max_row = len(df_target)
+                    
+                    # Create the IS Scatter Chart
+                    chart = workbook.add_chart({'type': 'scatter'})
+                    
+                    # Add Sample Series (Col I / Index 8)
+                    chart.add_series({
+                        'name': 'Samples',
+                        'categories': [sheet_name, 1, 5, max_row, 5],
+                        'values':     [sheet_name, 1, 8, max_row, 8],
+                        'marker': {'type': 'circle', 'fill': {'color': '#5B9BD5'}, 'border': {'color': '#5B9BD5'}},
+                    })
+                    
+                    # Add Blank Series (Col H / Index 7)
+                    chart.add_series({
+                        'name': 'Blank',
+                        'categories': [sheet_name, 1, 5, max_row, 5],
+                        'values':     [sheet_name, 1, 7, max_row, 7],
+                        'marker': {'type': 'circle', 'fill': {'color': '#ED7D31'}, 'border': {'color': '#ED7D31'}},
+                    })
+                    
+                    # Add CCQC Series (Col G / Index 6)
+                    chart.add_series({
+                        'name': 'CCQC',
+                        'categories': [sheet_name, 1, 5, max_row, 5],
+                        'values':     [sheet_name, 1, 6, max_row, 6],
+                        'marker': {'type': 'circle', 'fill': {'color': '#FF0000'}, 'border': {'color': '#A6A6A6'}},
+                    })
+                    
+                    # Configure exact chart appearance matching VBA
+                    chart.set_title({'name': 'IS Variation Plot', 'name_font': {'size': 12}})
+                    chart.set_x_axis({'name': 'Injection Order', 'major_gridlines': {'visible': False}})
+                    chart.set_y_axis({'name': '% Difference from Mean IS', 'major_gridlines': {'visible': True}, 'num_format': '0.00'})
+                    chart.set_legend({'position': 'right'})
+                    
+                    # Set size to exactly 425x227 pixels (approx 15cm x 8cm)
+                    chart.set_size({'width': 425, 'height': 227})
+                    
+                    # Insert chart into column K (Index 10) away from hidden columns
+                    worksheet.insert_chart('K2', chart)
 
             # --- INJECT STATS & MERGE FORMATTING ---
             for target_sheet in ["CC", "QC"]:
@@ -318,7 +406,6 @@ if st.button("Generate Dashboard"):
                     num_rows = len(df_target)
                     stat_row = num_rows + 1 
                     
-                    # Merge Metadata Headers (Rows 0 to 3)
                     ws.merge_range(0, 0, 3, 0, df_target.columns[0], header_format)
                     ws.merge_range(0, 1, 3, 1, df_target.columns[1], header_format)
                     
@@ -330,7 +417,6 @@ if st.button("Generate Dashboard"):
                         ws.merge_range(0, end_c - 1, 3, end_c - 1, df_target.columns[end_c - 1], header_format)
                         
                     elif target_sheet == "QC":
-                        # Merge Date and Subject ID down the 4-row QC blocks
                         for r in range(4, num_rows + 1, 4):
                             if r + 3 <= num_rows:
                                 date_val = df_target.iloc[r-1, 0]
@@ -341,7 +427,6 @@ if st.button("Generate Dashboard"):
                                 ws.merge_range(r, 0, r+3, 0, date_val, merge_fmt)
                                 ws.merge_range(r, 1, r+3, 1, subj_val, merge_fmt)
                     
-                    # Write Statistics Labels
                     label_col = 2 if target_sheet == "CC" else 1
                     ws.write(stat_row, label_col, "Mean", bold_label)
                     ws.write(stat_row + 1, label_col, "SD", bold_label)
@@ -351,10 +436,8 @@ if st.button("Generate Dashboard"):
                     start_col = 3 if target_sheet == "CC" else 4
                     end_col = len(std_names) + 3 if target_sheet == "CC" else 8
                     
-                    # Write Statistics Formulas
                     for col_num in range(start_col, end_col):
                         col_letter = xl_col_to_name(col_num)
-                        
                         data_range = f"{col_letter}5:{col_letter}{num_rows + 1}"
                         
                         ws.write_formula(stat_row, col_num, f"=IFERROR(AVERAGE({data_range}), \"\")", float_fmt)
@@ -368,7 +451,7 @@ if st.button("Generate Dashboard"):
                             'format': yellow_flag
                         })
 
-        st.success("Dashboard successfully generated with merged rows!")
+        st.success("Dashboard successfully generated with Automated IS Variation Plots!")
         st.download_button(
             label="Download Master Excel Dashboard",
             data=output.getvalue(),
