@@ -55,8 +55,9 @@ if st.button("Generate Dashboard"):
             study_num = str(setup_df.iloc[1, 1]).strip()
             num_subj_raw = setup_df.iloc[2, 1]
             num_subj = int(pd.to_numeric(num_subj_raw, errors='coerce')) if pd.notna(num_subj_raw) else 0
-            periods = str(setup_df.iloc[3, 1]).strip()
-            timepoints = str(setup_df.iloc[4, 1]).strip()
+            periods_str = str(setup_df.iloc[3, 1]).strip() if pd.notna(setup_df.iloc[3, 1]) else ""
+            timepoints_str = str(setup_df.iloc[4, 1]).strip() if pd.notna(setup_df.iloc[4, 1]) else ""
+            
             lloq = pd.to_numeric(setup_df.iloc[5, 1], errors='coerce')
             uloq = pd.to_numeric(setup_df.iloc[6, 1], errors='coerce')
             
@@ -180,6 +181,8 @@ if st.button("Generate Dashboard"):
             
             ccqc_rows.append({"Sample Name": "CC and QC", "Area": "", "IS area": "", "Calc.Conc.": "", "% Accuracy": ""})
             ccqc_chart.append((np.nan, np.nan, np.nan, np.nan, np.nan))
+            ccqc_rows.append({"Sample Name": "Sample Name", "Area": "Area", "IS area": "IS area", "Calc.Conc.": "Calc.Conc.", "% Accuracy": "% Acc"})
+            ccqc_chart.append((np.nan, np.nan, np.nan, np.nan, np.nan))
             
             for index, row in df.iterrows():
                 s_name = str(row[name_col]).strip().upper()
@@ -209,8 +212,8 @@ if st.button("Generate Dashboard"):
                 if 'UNKNOWN' in s_type and pd.notna(conc) and conc > uloq:
                     above_uloq.append({'name': s_name, 'conc': conc})
 
-                row_dict = {"Sample Name": s_name, "Area": a_area, "IS area": s_is_area, "Calc.Conc.": conc, "% Accuracy": acc_val}
                 chart_tuple = [current_inj, np.nan, np.nan, np.nan, np.nan]
+                pct_diff = np.nan
                 
                 if pd.notna(s_is_area) and pd.notna(avg_is_area) and avg_is_area > 0:
                     pct_diff = (s_is_area / avg_is_area) * 100 - 100
@@ -221,15 +224,20 @@ if st.button("Generate Dashboard"):
                 if 'UNKNOWN' in s_type and 'AQSTD' not in s_name and 'BLK' not in s_name and '+IS' not in s_name and 'BLANK' not in s_name:
                     chart_tuple[4] = conc
 
+                row_dict = {"Sample Name": s_name, "Area": a_area, "IS area": s_is_area, "Calc.Conc.": conc}
+                
                 if 'STANDARD' in s_type or 'QC' in s_type or 'QUALITY' in s_type:
+                    row_dict["% Accuracy"] = acc_val
                     ccqc_rows.append(row_dict)
                     ccqc_chart.append(tuple(chart_tuple))
                     if s_name in seen_ccqc: file_dupes.append(s_name)
                     else: seen_ccqc.add(s_name)
                 else:
+                    # Automatically map %IS into Column E for Unknown Samples
+                    row_dict["% Accuracy"] = pct_diff 
                     sample_rows.append(row_dict)
                     sample_chart.append(tuple(chart_tuple))
-                    if 'UNKNOWN' in s_type and 'AQSTD' not in s_name and 'BLK' not in s_name and '+IS' not in s_name and 'BLANK' not in s_name:
+                    if 'UNKNOWN' in s_type and 'AQSTD' not in s_name and 'BLK' not in s_name and '+IS' not in s_name:
                         if s_name in seen_samples: file_sample_dupes.append(s_name)
                         else:
                             seen_samples.add(s_name)
@@ -267,7 +275,7 @@ if st.button("Generate Dashboard"):
                 qc_file_data.append(q_dict)
                 
             avg_row = {"Sample Name": "Average IS area of CC and QC", "Area": "", "IS area": avg_is_area, "Calc.Conc.": "", "% Accuracy": ""}
-            header_row = {"Sample Name": "Sample Name", "Area": "Area", "IS area": "IS area", "Calc.Conc.": "Calc.Conc.", "% Accuracy": "% Acc"}
+            header_row = {"Sample Name": "Sample Name", "Area": "Area", "IS area": "IS area", "Calc.Conc.": "Calc.Conc.", "% Accuracy": "% IS"}
             
             final_rows = ccqc_rows + [avg_row, header_row] + sample_rows
             final_chart = ccqc_chart + [(np.nan, np.nan, np.nan, np.nan, np.nan), (np.nan, np.nan, np.nan, np.nan, np.nan)] + sample_chart
@@ -410,8 +418,8 @@ if st.button("Generate Dashboard"):
                 ws.set_column('K:K', 15, green_sheet_bg)
                 
                 for r_idx, row_dict in enumerate(final_rows):
-                    if r_idx == 0:
-                        ws.merge_range(0, 0, 0, 4, row_dict["Sample Name"], table_header_green)
+                    if row_dict["Sample Name"] == "CC and QC":
+                        ws.merge_range(r_idx, 0, r_idx, 4, row_dict["Sample Name"], table_header_green)
                     elif row_dict["Sample Name"] == "Average IS area of CC and QC":
                         ws.merge_range(r_idx, 0, r_idx, 1, row_dict["Sample Name"], table_header_gray)
                         ws.write(r_idx, 2, row_dict["IS area"], data_white)
@@ -422,7 +430,8 @@ if st.button("Generate Dashboard"):
                         ws.write(r_idx, 1, "Area", table_header_green)
                         ws.write(r_idx, 2, "IS area", table_header_green)
                         ws.write(r_idx, 3, "Calc.Conc.", table_header_green)
-                        ws.write(r_idx, 4, "% Acc", table_header_green)
+                        # Switch header intelligently based on block mapping
+                        ws.write(r_idx, 4, row_dict["% Accuracy"], table_header_green)
                     else:
                         ws.write(r_idx, 0, row_dict["Sample Name"], data_white)
                         ws.write(r_idx, 1, "" if pd.isna(row_dict["Area"]) else row_dict["Area"], data_white)
@@ -432,7 +441,13 @@ if st.button("Generate Dashboard"):
                             ws.write(r_idx, 3, conc_val, data_yellow_float)
                         else:
                             ws.write(r_idx, 3, "" if pd.isna(conc_val) else conc_val, data_white_float)
-                        ws.write(r_idx, 4, "" if pd.isna(row_dict["% Accuracy"]) else row_dict["% Accuracy"], data_white_pct)
+                            
+                        # Format Col E (% Acc or % IS variation) correctly
+                        acc = row_dict["% Accuracy"]
+                        if pd.isna(acc) or acc == "":
+                            ws.write(r_idx, 4, "", data_white_pct)
+                        else:
+                            ws.write(r_idx, 4, acc, data_white_pct)
 
                     c_tuple = chart_data[r_idx]
                     ws.write(r_idx, 26, "" if pd.isna(c_tuple[0]) else c_tuple[0])
@@ -561,74 +576,84 @@ if st.button("Generate Dashboard"):
                         ws.write_formula(stat_row + 3, col_num, f"=IFERROR(({col_letter}{stat_row + 1}/{col_letter}2)*100, \"\")", pct_fmt)
                         ws.conditional_format(data_range, {'type': 'formula', 'criteria': f"=AND(ISNUMBER({col_letter}5), OR({col_letter}5<{col_letter}$3, {col_letter}5>{col_letter}$4))", 'format': yellow_flag})
 
-            # --- CONCENTRATION MATRIX TAB GENERATION ---
-            ws_conc = workbook.add_worksheet("Concentration Matrix")
-            ws_conc.set_column('A:B', 15, general_fmt)
+            # --- CONCENTRATION DATA MATRIX TAB ---
+            ws_conc = workbook.add_worksheet("Concentration Data")
+            ws_conc.set_column('A:E', 15, general_fmt)
+            ws_conc.set_column('D:D', 20, general_fmt)
+            ws_conc.set_column('E:E', 25, general_fmt)
             
-            ws_conc.merge_range('A1:B1', "Molecule Name", header_format)
-            ws_conc.merge_range('C1:D1', mol_name, header_format)
-            ws_conc.merge_range('A2:B2', "Study Number", header_format)
-            ws_conc.merge_range('C2:D2', study_num, header_format)
-            ws_conc.merge_range('A3:B3', "CC range", header_format)
-            lloq_fmt = f"{lloq:.3f}" if pd.notna(lloq) else "1.000"
-            uloq_fmt = f"{uloq:.3f}" if pd.notna(uloq) else "100.000"
-            ws_conc.merge_range('C3:D3', f"{lloq_fmt} ng/mL to {uloq_fmt} ng/mL", header_format)
+            conc_headers = ["Subject No.", "Period No.", "Timepoints", "Conc.(ng/mL)", "Sample Name"]
+            for col_num, header in enumerate(conc_headers): 
+                ws_conc.write(0, col_num, header, table_header_green)
+                
+            periods_list = [p.strip() for p in periods_str.split(',')] if periods_str else []
+            timepoints_list = [tp.strip() for tp in timepoints_str.split(',')] if timepoints_str else []
             
-            matrix_data = []
-            for s_name, conc in global_samples.items():
-                display_conc = "BLQ" if (pd.isna(conc) or (pd.notna(lloq) and conc < lloq)) else conc
-                parts = re.split(r'[-_]', s_name)
-                subj = parts[0] if len(parts) > 0 else s_name
-                period = parts[1] if len(parts) > 1 else ""
-                timep = parts[2] if len(parts) > 2 else ""
-                
-                matrix_data.append({
-                    'Subject': subj,
-                    'Sort_Num': extract_sort_num(subj),
-                    'Period': period,
-                    'Timepoint': timep,
-                    'Conc': display_conc
-                })
-                
-            if matrix_data:
-                matrix_df = pd.DataFrame(matrix_data)
-                # Drop duplicate subject/period/timepoints (keeps last injection, standard for repeats)
-                matrix_df = matrix_df.drop_duplicates(subset=['Subject', 'Period', 'Timepoint'], keep='last')
-                pivot_df = matrix_df.pivot(index=['Sort_Num', 'Subject', 'Period'], columns='Timepoint', values='Conc')
-                
-                def tp_sort(tp):
-                    if isinstance(tp, str) and "PRE" in tp.upper(): return -1.0
-                    nums = re.findall(r'\d+\.\d+|\d+', str(tp))
-                    return float(nums[0]) if nums else 999.0
+            row_idx = 1
+            if num_subj > 0 and periods_list and timepoints_list:
+                mapped_samples = {}
+                for s_name, conc in global_samples.items():
+                    parts = re.split(r'[-_]', s_name)
+                    subj_str = parts[0] if len(parts) > 0 else s_name
+                    period_str = parts[1] if len(parts) > 1 else ""
+                    tp_str = parts[2] if len(parts) > 2 else ""
                     
-                sorted_cols = sorted(pivot_df.columns, key=tp_sort)
-                pivot_df = pivot_df[sorted_cols].reset_index()
-                
-                ws_conc.set_column(2, len(sorted_cols)+1, 15, conc_fmt)
-                
-                ws_conc.write(4, 0, "Subject No.", header_format)
-                ws_conc.write(4, 1, "Period No.", header_format)
-                for col_idx, col_name in enumerate(sorted_cols):
-                    ws_conc.write(4, col_idx + 2, col_name, header_format)
+                    subj_nums = re.findall(r'\d+', subj_str)
+                    subj_int = int(subj_nums[-1]) if subj_nums else 0
+                    period_clean = period_str.strip().upper()
                     
-                row_idx = 5
-                # The dataframe is inherently sorted by the integer Sort_Num from the MultiIndex pivot
-                for _, row in pivot_df.iterrows():
-                    ws_conc.write(row_idx, 0, row['Subject'], general_fmt)
-                    ws_conc.write(row_idx, 1, row['Period'], general_fmt)
-                    for col_idx, col_name in enumerate(sorted_cols):
-                        val = row[col_name]
-                        if pd.isna(val):
-                            ws_conc.write(row_idx, col_idx + 2, "", general_fmt)
-                        elif val == "BLQ":
-                            ws_conc.write(row_idx, col_idx + 2, "BLQ", general_fmt)
-                        else:
-                            ws_conc.write(row_idx, col_idx + 2, val, conc_fmt)
-                    row_idx += 1
+                    tp_nums = re.findall(r'\d+\.\d+|\d+', tp_str)
+                    tp_float = float(tp_nums[0]) if tp_nums else -1.0
+                    if "PRE" in tp_str.upper(): tp_float = -1.0
+                    
+                    mapped_samples[(subj_int, period_clean, tp_float)] = (conc, s_name)
+                    
+                for subj_idx in range(1, num_subj + 1):
+                    subj_formatted = f"S{subj_idx:03d}"
+                    for period_val in periods_list:
+                        period_clean = period_val.strip().upper()
+                        for tp_val in timepoints_list:
+                            tp_nums = re.findall(r'\d+\.\d+|\d+', str(tp_val))
+                            tp_float = float(tp_nums[0]) if tp_nums else -1.0
+                            if "PRE" in str(tp_val).upper(): tp_float = -1.0
+                            
+                            lookup_key = (subj_idx, period_clean, tp_float)
+                            if lookup_key in mapped_samples:
+                                conc, real_s_name = mapped_samples[lookup_key]
+                                display_conc = "BLQ" if (pd.isna(conc) or (pd.notna(lloq) and conc < lloq)) else conc
+                                s_name_out = real_s_name
+                            else:
+                                display_conc = "M"
+                                s_name_out = "Missing"
+                                
+                            ws_conc.write(row_idx, 0, subj_formatted, data_white)
+                            ws_conc.write(row_idx, 1, period_val, data_white)
+                            ws_conc.write(row_idx, 2, f"{tp_val}", data_white)
+                            
+                            if display_conc in ["BLQ", "M"]:
+                                ws_conc.write(row_idx, 3, display_conc, data_white)
+                            else:
+                                ws_conc.write(row_idx, 3, display_conc, data_white_float)
+                                
+                            ws_conc.write(row_idx, 4, s_name_out, data_white)
+                            row_idx += 1
             else:
-                ws_conc.write(4, 0, "No unknown sample data found.", general_fmt)
+                for s_name, conc in sorted(global_samples.items(), key=lambda x: extract_sort_num(x[0])):
+                    display_conc = "BLQ" if (pd.isna(conc) or (pd.notna(lloq) and conc < lloq)) else conc
+                    parts = re.split(r'[-_]', s_name)
+                    subj = parts[0] if len(parts) > 0 else s_name
+                    period = parts[1] if len(parts) > 1 else ""
+                    timep = parts[2] if len(parts) > 2 else ""
+                    if subj.startswith('S') and subj[1:].isdigit(): subj = f"S{int(subj[1:]):03d}"
+                        
+                    ws_conc.write(row_idx, 0, subj, data_white)
+                    ws_conc.write(row_idx, 1, period, data_white)
+                    ws_conc.write(row_idx, 2, f"'{timep}", data_white)
+                    ws_conc.write(row_idx, 3, display_conc, data_white if display_conc == "BLQ" else data_white_float)
+                    ws_conc.write(row_idx, 4, s_name, data_white)
+                    row_idx += 1
 
-        st.success("Dashboard successfully generated with 2D PK Matrix!")
+        st.success("Dashboard generated successfully with Flat Concentration Data Matrix!")
         st.download_button(
             label="Download Master Excel Dashboard",
             data=output.getvalue(),
