@@ -80,7 +80,7 @@ if st.button("Generate Dashboard"):
         qc_file_data = []
         global_samples = {}
         batch_meta_data = {}
-        all_repeats_data = [] # Centralized list for all batch anomalies
+        all_repeats_data = [] 
         
         for file in uploaded_files:
             file.seek(0)
@@ -229,7 +229,7 @@ if st.button("Generate Dashboard"):
                 else:
                     sample_rows.append(row_dict)
                     sample_chart.append(tuple(chart_tuple))
-                    if 'UNKNOWN' in s_type and 'AQSTD' not in s_name and 'BLK' not in s_name and '+IS' not in s_name:
+                    if 'UNKNOWN' in s_type and 'AQSTD' not in s_name and 'BLK' not in s_name and '+IS' not in s_name and 'BLANK' not in s_name:
                         if s_name in seen_samples: file_sample_dupes.append(s_name)
                         else:
                             seen_samples.add(s_name)
@@ -252,7 +252,6 @@ if st.button("Generate Dashboard"):
             file_cc_dict['r'] = "" if pd.isna(r_val) else r_val
             cc_file_data.append(file_cc_dict)
             
-            # Master Log Collection for the Repeats Tab
             for smp in out_of_range_is:
                 all_repeats_data.append({"Batch Name": safe_sheet_name, "Sample Name": smp['name'], "Concentration": smp['conc'], "Reason Code": "Out of Range %IS"})
             for smp in above_uloq:
@@ -290,7 +289,6 @@ if st.button("Generate Dashboard"):
                 "Nominal Conc. Check": nom_check_msg, "Duplicate CC & QC ID Check": dup_ccqc_msg, "Duplicate Sample Name Check": dup_samp_msg
             })
 
-        # Finalize Top-Level Tab Constructs
         excel_tabs["Summary"] = pd.DataFrame(summary_log)
         
         if all_repeats_data:
@@ -367,7 +365,6 @@ if st.button("Generate Dashboard"):
             table_header_green = workbook.add_format({**tnr, 'bold': True, 'bg_color': '#C6E0B4', 'border': 1, 'align': 'center', 'valign': 'vcenter'})
             table_header_gray = workbook.add_format({**tnr, 'bold': True, 'bg_color': '#D9D9D9', 'border': 1, 'align': 'center', 'valign': 'vcenter'})
 
-            # --- RENDER SUMMARY, REPEATS, CC, QC ---
             for sheet_name in ["Summary", "Repeats", "CC", "QC"]:
                 if sheet_name in excel_tabs:
                     df_tab = excel_tabs[sheet_name]
@@ -398,7 +395,6 @@ if st.button("Generate Dashboard"):
                         worksheet.set_column(1, 3, 15, general_fmt)
                         worksheet.set_column(4, 7, 15, conc_fmt)
 
-            # --- INDIVIDUAL BATCH TABS - FULL LAYOUT ---
             for safe_sheet_name, meta in batch_meta_data.items():
                 ws = workbook.add_worksheet(safe_sheet_name)
                 final_rows = meta['rows']
@@ -565,8 +561,10 @@ if st.button("Generate Dashboard"):
                         ws.write_formula(stat_row + 3, col_num, f"=IFERROR(({col_letter}{stat_row + 1}/{col_letter}2)*100, \"\")", pct_fmt)
                         ws.conditional_format(data_range, {'type': 'formula', 'criteria': f"=AND(ISNUMBER({col_letter}5), OR({col_letter}5<{col_letter}$3, {col_letter}5>{col_letter}$4))", 'format': yellow_flag})
 
-            ws_conc = workbook.add_worksheet("Concentration Data")
-            ws_conc.set_column('A:E', 20, general_fmt)
+            # --- CONCENTRATION MATRIX TAB GENERATION ---
+            ws_conc = workbook.add_worksheet("Concentration Matrix")
+            ws_conc.set_column('A:B', 15, general_fmt)
+            
             ws_conc.merge_range('A1:B1', "Molecule Name", header_format)
             ws_conc.merge_range('C1:D1', mol_name, header_format)
             ws_conc.merge_range('A2:B2', "Study Number", header_format)
@@ -576,26 +574,61 @@ if st.button("Generate Dashboard"):
             uloq_fmt = f"{uloq:.3f}" if pd.notna(uloq) else "100.000"
             ws_conc.merge_range('C3:D3', f"{lloq_fmt} ng/mL to {uloq_fmt} ng/mL", header_format)
             
-            conc_headers = ["Subject No.", "Period No.", "Timepoints", "Conc.(ng/mL)", "Sample Name"]
-            for col_num, header in enumerate(conc_headers): ws_conc.write(4, col_num, header, header_format)
-                
-            row_idx = 5
-            for s_name, conc in sorted(global_samples.items(), key=lambda x: extract_sort_num(x[0])):
+            matrix_data = []
+            for s_name, conc in global_samples.items():
                 display_conc = "BLQ" if (pd.isna(conc) or (pd.notna(lloq) and conc < lloq)) else conc
                 parts = re.split(r'[-_]', s_name)
                 subj = parts[0] if len(parts) > 0 else s_name
                 period = parts[1] if len(parts) > 1 else ""
                 timep = parts[2] if len(parts) > 2 else ""
-                if subj.startswith('S') and subj[1:].isdigit(): subj = f"S{int(subj[1:]):02d}"
+                
+                matrix_data.append({
+                    'Subject': subj,
+                    'Sort_Num': extract_sort_num(subj),
+                    'Period': period,
+                    'Timepoint': timep,
+                    'Conc': display_conc
+                })
+                
+            if matrix_data:
+                matrix_df = pd.DataFrame(matrix_data)
+                # Drop duplicate subject/period/timepoints (keeps last injection, standard for repeats)
+                matrix_df = matrix_df.drop_duplicates(subset=['Subject', 'Period', 'Timepoint'], keep='last')
+                pivot_df = matrix_df.pivot(index=['Sort_Num', 'Subject', 'Period'], columns='Timepoint', values='Conc')
+                
+                def tp_sort(tp):
+                    if isinstance(tp, str) and "PRE" in tp.upper(): return -1.0
+                    nums = re.findall(r'\d+\.\d+|\d+', str(tp))
+                    return float(nums[0]) if nums else 999.0
                     
-                ws_conc.write(row_idx, 0, subj, general_fmt)
-                ws_conc.write(row_idx, 1, period, general_fmt)
-                ws_conc.write(row_idx, 2, f"'{timep}", general_fmt)
-                ws_conc.write(row_idx, 3, display_conc, general_fmt if display_conc == "BLQ" else conc_fmt)
-                ws_conc.write(row_idx, 4, s_name, general_fmt)
-                row_idx += 1
+                sorted_cols = sorted(pivot_df.columns, key=tp_sort)
+                pivot_df = pivot_df[sorted_cols].reset_index()
+                
+                ws_conc.set_column(2, len(sorted_cols)+1, 15, conc_fmt)
+                
+                ws_conc.write(4, 0, "Subject No.", header_format)
+                ws_conc.write(4, 1, "Period No.", header_format)
+                for col_idx, col_name in enumerate(sorted_cols):
+                    ws_conc.write(4, col_idx + 2, col_name, header_format)
+                    
+                row_idx = 5
+                # The dataframe is inherently sorted by the integer Sort_Num from the MultiIndex pivot
+                for _, row in pivot_df.iterrows():
+                    ws_conc.write(row_idx, 0, row['Subject'], general_fmt)
+                    ws_conc.write(row_idx, 1, row['Period'], general_fmt)
+                    for col_idx, col_name in enumerate(sorted_cols):
+                        val = row[col_name]
+                        if pd.isna(val):
+                            ws_conc.write(row_idx, col_idx + 2, "", general_fmt)
+                        elif val == "BLQ":
+                            ws_conc.write(row_idx, col_idx + 2, "BLQ", general_fmt)
+                        else:
+                            ws_conc.write(row_idx, col_idx + 2, val, conc_fmt)
+                    row_idx += 1
+            else:
+                ws_conc.write(4, 0, "No unknown sample data found.", general_fmt)
 
-        st.success("Dashboard generated successfully with Repeats Tracker!")
+        st.success("Dashboard successfully generated with 2D PK Matrix!")
         st.download_button(
             label="Download Master Excel Dashboard",
             data=output.getvalue(),
