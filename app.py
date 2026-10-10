@@ -152,7 +152,7 @@ if st.button("Generate Dashboard"):
                         ccid_str = cc_match.group(0)
                         break
 
-            file_cc_dict = {'Date': acq_date, 'SUBJECT ID': subj_id, 'CCID': ccid_str}
+            file_cc_dict = {'Date of first injection': acq_date, 'SUBJECT ID': subj_id, 'CCID': ccid_str}
             for std in std_names: file_cc_dict[std] = ""
             
             lqc_list, mmqc_list, mqc_list, hqc_list = [], [], [], []
@@ -184,7 +184,7 @@ if st.button("Generate Dashboard"):
             
             for i in range(4):
                 q_dict = {
-                    'Acquisition Date': acq_date if i==0 else "",
+                    'Date of first injection': acq_date if i==0 else "",
                     'SUBJECT ID': subj_id if i==0 else "",
                     'LQC, HQC ID': lqc_ids[i] if i < len(lqc_ids) else "",
                     'MQC, MMQC ID': mmqc_ids[i] if i < len(mmqc_ids) else (mqc_ids[i] if i < len(mqc_ids) else ""),
@@ -209,7 +209,7 @@ if st.button("Generate Dashboard"):
             cc_df_data['Sort_Num'] = cc_df_data['CCID'].apply(extract_sort_num)
             cc_df_data = cc_df_data.sort_values(by='Sort_Num').drop('Sort_Num', axis=1)
             
-            cc_columns = ['Date', 'SUBJECT ID', 'CCID'] + std_names + ['Slope', 'Intercept', 'r']
+            cc_columns = ['Date of first injection', 'SUBJECT ID', 'CCID'] + std_names + ['Slope', 'Intercept', 'r']
             row_nom_cc = {'CCID': 'Nominal'}; row_low_cc = {'CCID': 'Lower limit'}; row_up_cc = {'CCID': 'Upper limit'}
             for std in std_names:
                 val = nominals.get(std, "")
@@ -232,7 +232,7 @@ if st.button("Generate Dashboard"):
             
             qc_df_data = qc_df_data.sort_values(by=['Sort_Num', 'Block', 'Original_Index']).drop(['Sort_Num', 'Block', 'Original_Index'], axis=1)
             
-            qc_columns = ['Acquisition Date', 'SUBJECT ID', 'LQC, HQC ID', 'MQC, MMQC ID', 'LQC', 'MMQC', 'MQC', 'HQC']
+            qc_columns = ['Date of first injection', 'SUBJECT ID', 'LQC, HQC ID', 'MQC, MMQC ID', 'LQC', 'MMQC', 'MQC', 'HQC']
             row_nom_qc = {'MQC, MMQC ID': 'Nominal'}; row_low_qc = {'MQC, MMQC ID': 'Lower limit'}; row_up_qc = {'MQC, MMQC ID': 'Upper limit'}
             for qc in ['LQC', 'MMQC', 'MQC', 'HQC']:
                 val = nominals.get(qc, "")
@@ -260,12 +260,10 @@ if st.button("Generate Dashboard"):
             yellow_flag = workbook.add_format({'bg_color': '#FFFF00', 'bold': True, 'font_color': '#FF0000'})
             bold_label = workbook.add_format({'bold': True, 'align': 'right'})
             
-            # Column Number Formats
             general_fmt = workbook.add_format({'align': 'center'})
             conc_fmt = workbook.add_format({'num_format': '0.000', 'align': 'center'})
             r_fmt = workbook.add_format({'num_format': '0.0000', 'align': 'center'})
             
-            # Statistical Row Formats
             float_fmt = workbook.add_format({'num_format': '0.000', 'align': 'center'})
             stdev_fmt = workbook.add_format({'num_format': '0.0000', 'align': 'center'})
             pct_fmt = workbook.add_format({'num_format': '0.00', 'align': 'center'})
@@ -274,7 +272,6 @@ if st.button("Generate Dashboard"):
             for sheet_name in writer.sheets:
                 worksheet = writer.sheets[sheet_name]
                 
-                # Header row
                 for col_num, value in enumerate(writer.sheets[sheet_name].table[0]):
                     worksheet.write(0, col_num, value, header_format)
                     
@@ -284,25 +281,18 @@ if st.button("Generate Dashboard"):
                     worksheet.set_column('B:Z', 15, general_fmt)
                     
                 elif sheet_name == "CC":
-                    # Meta columns
                     worksheet.set_column(1, 2, 15, general_fmt)
                     
-                    # 3 Digits for Concentrations
                     start_c = 3
                     end_c = 3 + len(std_names) - 1
                     if end_c >= start_c:
                         worksheet.set_column(start_c, end_c, 15, conc_fmt)
                         
-                    # System Generated (General) for Slope and Intercept
                     worksheet.set_column(end_c + 1, end_c + 2, 15, general_fmt)
-                    
-                    # 4 Digits for Correlation Coefficient (r)
                     worksheet.set_column(end_c + 3, end_c + 3, 15, r_fmt)
                     
                 elif sheet_name == "QC":
-                    # Meta columns
                     worksheet.set_column(1, 3, 15, general_fmt)
-                    # 3 Digits for QC Concentrations
                     worksheet.set_column(4, 7, 15, conc_fmt)
 
             # --- INJECT STATS & CONDITIONAL FORMATTING ---
@@ -339,7 +329,7 @@ if st.button("Generate Dashboard"):
                             'format': yellow_flag
                         })
 
-        st.success("Dashboard successfully generated with precise number formatting!")
+        st.success("Dashboard successfully generated with updated column headers!")
         st.download_button(
             label="Download Master Excel Dashboard",
             data=output.getvalue(),
