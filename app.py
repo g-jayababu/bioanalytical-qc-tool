@@ -103,7 +103,7 @@ if st.button("Generate Dashboard"):
                     header_idx = idx
                     break
             
-            slope, intercept, r_val, acq_date = "", "", "", ""
+            slope, intercept, r_val = "", "", ""
             if header_idx is not None:
                 for idx, row in df.iloc[:header_idx].iterrows():
                     for c_idx in range(len(row)):
@@ -114,8 +114,6 @@ if st.button("Generate Dashboard"):
                             intercept = pd.to_numeric(row.values[c_idx + 1], errors='coerce')
                         elif ('correlatio' in val or val == 'r') and c_idx + 1 < len(row):
                             r_val = pd.to_numeric(row.values[c_idx + 1], errors='coerce')
-                        elif ('acq date' in val or 'date/time' in val) and c_idx + 1 < len(row):
-                            acq_date = str(row.values[c_idx + 1])
             
             if header_idx is not None:
                 new_headers = df.iloc[header_idx]
@@ -130,6 +128,21 @@ if st.button("Generate Dashboard"):
             type_col = next((c for c in df.columns if 'sample type' in c or 'type' in c), None)
             is_area_col = next((c for c in df.columns if ('is area' in c or 'is peak area' in c or 'istd' in c) and 'ratio' not in c and 'analyte' not in c), None)
             conc_col = next((c for c in df.columns if 'calc' in c and 'conc' in c), None)
+            
+            # Identify the Date column dynamically from the data table
+            date_col = next((c for c in df.columns if 'acq date' in c or 'acquisition date' in c or 'date/time' in c or 'date' in c), None)
+            acq_date = ""
+            
+            if date_col and not df[date_col].dropna().empty:
+                raw_date = str(df[date_col].dropna().iloc[0]).strip()
+                try:
+                    acq_date = pd.to_datetime(raw_date).strftime('%d-%b-%Y').upper()
+                except Exception:
+                    acq_date = raw_date
+                    
+            # Fallback to today's date if no valid date was found in the file
+            if not acq_date:
+                acq_date = pd.Timestamp.now().strftime('%d-%b-%Y').upper()
             
             if not all([name_col, type_col, is_area_col, conc_col]):
                 summary_log.append({"File Name": file.name, "Status": "FAILED", "Error Details": "Missing critical data columns."})
@@ -329,7 +342,7 @@ if st.button("Generate Dashboard"):
                             'format': yellow_flag
                         })
 
-        st.success("Dashboard successfully generated with updated column headers!")
+        st.success("Dashboard successfully generated with Date Extraction formatting!")
         st.download_button(
             label="Download Master Excel Dashboard",
             data=output.getvalue(),
