@@ -1,6 +1,7 @@
 import streamlit as st
 import pandas as pd
 import io
+import re
 from xlsxwriter.utility import xl_col_to_name
 
 st.set_page_config(layout="wide")
@@ -24,13 +25,11 @@ def load_data(file):
             return pd.read_csv(file, names=dummy_cols, on_bad_lines='skip'), None
         except Exception as e:
             return None, f"CSV Error: {str(e)}"
-            
     elif file_name_lower.endswith('.xlsx') or file_name_lower.endswith('.xlsm'):
         try:
             return pd.read_excel(file, engine='openpyxl'), None
         except Exception as e:
             return None, f"XLSX Error: {str(e)}"
-            
     elif file_name_lower.endswith('.xls'):
         try:
             return pd.read_excel(file, engine='xlrd'), None
@@ -48,7 +47,6 @@ def load_data(file):
                         return pd.read_csv(file, sep='\t', encoding='latin1', names=dummy_cols, on_bad_lines='skip'), None
                     except Exception as e4:
                         return None, f"Failed all formats. Last error: {str(e4)}"
-                        
     return None, "Unsupported file extension."
 
 if st.button("Generate Dashboard"):
@@ -64,21 +62,27 @@ if st.button("Generate Dashboard"):
             uloq = pd.to_numeric(setup_df.iloc[6, 1], errors='coerce')
             
             nominals = {}
+            std_names = []
+            
             for index in range(8, len(setup_df)):
                 cc_id = str(setup_df.iloc[index, 0]).strip().upper()
                 nom_val = pd.to_numeric(setup_df.iloc[index, 1], errors='coerce')
-                if cc_id != 'NAN' and cc_id != 'NONE' and pd.notna(nom_val):
+                if cc_id not in ['NAN', 'NONE'] and pd.notna(nom_val):
                     nominals[cc_id] = nom_val
-            st.info(f"Setup Loaded | Molecule: {mol_name} | Study: {study_num} | LLOQ: {lloq} | ULOQ: {uloq}")
+                    if 'STD' in cc_id or 'STANDARD' in cc_id:
+                        std_names.append(cc_id)
+            
+            std_names = sorted(std_names) # Match VBA alphabetical sorting
+            st.info(f"Setup Loaded | Molecule: {mol_name} | Study: {study_num}")
         except Exception as e:
             st.error(f"Failed to read Setup file. Error: {str(e)}")
             st.stop()
 
         # --- 2. PROCESS INSTRUMENT FILES ---
-        global_ccqc_ids = {}
-        global_samples = {}
         summary_log = []
         excel_tabs = {}
+        cc_file_data = []
+        qc_file_data = []
         
         for file in uploaded_files:
             file.seek(0)
@@ -92,7 +96,7 @@ if st.button("Generate Dashboard"):
             df = df.dropna(how='all', axis=1)
             df = df.reset_index(drop=True)
             
-            # --- FIND THE TRUE HEADER ROW ---
+            # Find the true header row
             header_idx = None
             for idx, row in df.iterrows():
                 row_string = str(row.values).lower()
@@ -100,6 +104,22 @@ if st.button("Generate Dashboard"):
                     header_idx = idx
                     break
             
+            # Extract Metadata (Slope, Intercept, Acq Date) before slicing the dataframe
+            slope, intercept, r_val, acq_date = "", "", "", ""
+            if header_idx is not None:
+                for idx, row in df.iloc[:header_idx].iterrows():
+                    for c_idx in range(len(row)):
+                        val = str(row.values[c_idx]).strip().lower()
+                        if val == 'slope' and c_idx + 1 < len(row):
+                            slope = pd.to_numeric(row.values[c_idx + 1], errors='coerce')
+                        elif val == 'intercept' and c_idx + 1 < len(row):
+                            intercept = pd.to_numeric(row.values[c_idx + 1], errors='coerce')
+                        elif ('correlatio' in val or val == 'r') and c_idx + 1 < len(row):
+                            r_val = pd.to_numeric(row.values[c_idx + 1], errors='coerce')
+                        elif ('acq date' in val or 'date/time' in val) and c_idx + 1 < len(row):
+                            acq_date = str(row.values[c_idx + 1])
+            
+            # Slice dataframe to the actual table
             if header_idx is not None:
                 new_headers = df.iloc[header_idx]
                 df = df.iloc[header_idx + 1:].copy()
@@ -113,96 +133,119 @@ if st.button("Generate Dashboard"):
             type_col = next((c for c in df.columns if 'sample type' in c or 'type' in c), None)
             is_area_col = next((c for c in df.columns if ('is area' in c or 'is peak area' in c or 'istd' in c) and 'ratio' not in c and 'analyte' not in c), None)
             conc_col = next((c for c in df.columns if 'calc' in c and 'conc' in c), None)
-            acc_col = next((c for c in df.columns if 'accur' in c), None)
             
-            if not all([name_col, type_col, is_area_col, conc_col, acc_col]):
-                missing = []
-                if not name_col: missing.append("Sample Name")
-                if not type_col: missing.append("Sample Type")
-                if not is_area_col: missing.append("IS Area")
-                if not conc_col: missing.append("Calc Conc")
-                if not acc_col: missing.append("Accuracy")
-                summary_log.append({"File Name": file.name, "Status": "FAILED", "Error Details": f"Missing columns: {', '.join(missing)}"})
+            if not all([name_col, type_col, is_area_col, conc_col]):
+                summary_log.append({"File Name": file.name, "Status": "FAILED", "Error Details": "Missing critical data columns."})
                 continue
+            
+            # Extract Subject ID from Filename
+            subj_id = "S1"
+            match = re.search(r'(S\d+(?:[-_]S\d+)*)', file.name, re.IGNORECASE)
+            if match:
+                subj_id = match.group(1).upper()
+            elif 'REPEAT' in file.name.upper():
+                subj_id = "Repeat"
+            elif 'ISR' in file.name.upper():
+                subj_id = "ISR"
                 
-            file_dupes = []
-            file_sample_dupes = []
+            # Extract First CCID
+            ccid_str = "CC-01"
+            for s_name in df[name_col]:
+                if 'CC-' in str(s_name).upper():
+                    cc_match = re.search(r'CC-\d+', str(s_name).upper())
+                    if cc_match:
+                        ccid_str = cc_match.group(0)
+                        break
+
+            # --- BUILD VBA-STYLE DATA DICTIONARIES ---
+            file_cc_dict = {'Date': acq_date, 'SUBJECT ID': subj_id, 'CCID': ccid_str}
+            for std in std_names: file_cc_dict[std] = ""
             
-            cc_qc_df = df[df[type_col].str.contains('Standard|QC', case=False, na=False)].copy()
-            cc_qc_df[is_area_col] = pd.to_numeric(cc_qc_df[is_area_col], errors='coerce')
-            avg_is_area = cc_qc_df[is_area_col].mean()
-            
-            lower_is_limit = avg_is_area * 0.4
-            upper_is_limit = avg_is_area * 1.6
-            
-            out_of_range_is = []
-            above_uloq = []
+            lqc_list, mmqc_list, mqc_list, hqc_list = [], [], [], []
+            lqc_ids, mmqc_ids, mqc_ids, hqc_ids = [], [], [], []
             
             for index, row in df.iterrows():
                 s_name = str(row[name_col]).strip().upper()
-                s_type = str(row[type_col]).strip()
-                s_conc = pd.to_numeric(row[conc_col], errors='coerce')
-                s_is_area = pd.to_numeric(row[is_area_col], errors='coerce')
+                conc = pd.to_numeric(row[conc_col], errors='coerce')
+                if pd.isna(conc): conc = ""
                 
-                if pd.notna(s_is_area) and ('Standard' in s_type or 'QC' in s_type or 'Unknown' in s_type):
-                    if s_is_area < lower_is_limit or s_is_area > upper_is_limit:
-                        if 'BLK' not in s_name and 'AQSTD' not in s_name:
-                             out_of_range_is.append({"Sample Name": s_name, "Concentration": s_conc, "IS Area": s_is_area})
+                # Map CCs dynamically
+                for std in std_names:
+                    if std in s_name or std.replace("-", "") in s_name:
+                        file_cc_dict[std] = conc
+                        break
                 
-                if 'Unknown' in s_type and pd.notna(s_conc):
-                    if s_conc > uloq:
-                         above_uloq.append({"Sample Name": s_name, "Concentration": s_conc})
-                
-                if 'Standard' in s_type or 'QC' in s_type:
-                    if s_name in global_ccqc_ids:
-                        file_dupes.append(f"Duplicate CC/QC: {s_name}")
-                    else:
-                        global_ccqc_ids[s_name] = {'file': file.name, 'conc': s_conc}
-                
-                elif 'Unknown' in s_type and 'AQSTD' not in s_name:
-                    if s_name in global_samples:
-                        file_sample_dupes.append(f"Duplicate Sample: {s_name}")
-                    else:
-                        global_samples[s_name] = {'file': file.name, 'conc': s_conc}
+                # Map QCs dynamically
+                if 'LQC' in s_name:
+                    lqc_list.append(conc); lqc_ids.append(s_name)
+                elif 'MMQC' in s_name:
+                    mmqc_list.append(conc); mmqc_ids.append(s_name)
+                elif 'MQC' in s_name and 'MMQC' not in s_name:
+                    mqc_list.append(conc); mqc_ids.append(s_name)
+                elif 'HQC' in s_name:
+                    hqc_list.append(conc); hqc_ids.append(s_name)
 
-            clean_df = df[[name_col, type_col, is_area_col, conc_col, acc_col]].copy()
-            clean_df.columns = ["Sample Name", "Sample Type", "IS Area", "Calc. Conc.", "% Accuracy"]
-            excel_tabs[file.name[:31]] = clean_df
+            file_cc_dict['Slope'] = "" if pd.isna(slope) else slope
+            file_cc_dict['Intercept'] = "" if pd.isna(intercept) else intercept
+            file_cc_dict['r'] = "" if pd.isna(r_val) else r_val
+            cc_file_data.append(file_cc_dict)
             
-            summary_log.append({
-                "File Name": file.name, 
-                "Status": "SUCCESS", 
-                "Error Details": "Processed",
-                "Duplicate CC & QC": "Yes" if file_dupes else "No",
-                "Duplicate Samples": "Yes" if file_sample_dupes else "No",
-                "Out of Range IS Count": len(out_of_range_is),
-                "Above ULOQ Count": len(above_uloq)
-            })
-            
-        # --- 3. BUILD FINAL SUMMARY TABS (PIVOTED) ---
+            # Generate exactly 4 rows for QCs (Matching VBA)
+            for i in range(4):
+                q_dict = {
+                    'Acquisition Date': acq_date if i==0 else "",
+                    'SUBJECT ID': subj_id if i==0 else "",
+                    'LQC, HQC ID': lqc_ids[i] if i < len(lqc_ids) else "",
+                    'MQC, MMQC ID': mmqc_ids[i] if i < len(mmqc_ids) else (mqc_ids[i] if i < len(mqc_ids) else ""),
+                    'LQC': lqc_list[i] if i < len(lqc_list) else "",
+                    'MMQC': mmqc_list[i] if i < len(mmqc_list) else "",
+                    'MQC': mqc_list[i] if i < len(mqc_list) else "",
+                    'HQC': hqc_list[i] if i < len(hqc_list) else ""
+                }
+                qc_file_data.append(q_dict)
+                
+            summary_log.append({"File Name": file.name, "Status": "SUCCESS", "Error Details": "Processed"})
+
+        # --- 3. CONSTRUCT VBA-STYLE DATAFRAMES ---
         excel_tabs["Summary"] = pd.DataFrame(summary_log)
         
-        # Filter and Pivot CC Data (Rows = Files, Columns = CC IDs)
-        cc_list = [{"Source File": v['file'], "CCID": k, "Concentration": v['conc']} for k, v in global_ccqc_ids.items() if 'CC' in k or 'STD' in k]
-        if cc_list: 
-            cc_df = pd.DataFrame(cc_list).pivot(index='Source File', columns='CCID', values='Concentration').reset_index()
-            excel_tabs["CC"] = cc_df
+        # Build CC DataFrame with limits at the top
+        if cc_file_data:
+            cc_columns = ['Date', 'SUBJECT ID', 'CCID'] + std_names + ['Slope', 'Intercept', 'r']
+            row_nom_cc = {'CCID': 'Nominal'}; row_low_cc = {'CCID': 'Lower limit'}; row_up_cc = {'CCID': 'Upper limit'}
+            for std in std_names:
+                val = nominals.get(std, "")
+                row_nom_cc[std] = val
+                if val != "":
+                    limit = 0.20 if ('A' in std or '1' in std) else 0.15
+                    row_low_cc[std] = val * (1 - limit)
+                    row_up_cc[std] = val * (1 + limit)
+            
+            cc_df = pd.concat([pd.DataFrame([row_nom_cc, row_low_cc, row_up_cc]), pd.DataFrame(cc_file_data)], ignore_index=True)
+            excel_tabs["CC"] = cc_df[cc_columns]
 
-        # Filter and Pivot QC Data
-        qc_list = [{"Source File": v['file'], "QCID": k, "Concentration": v['conc']} for k, v in global_ccqc_ids.items() if 'QC' in k]
-        if qc_list: 
-            qc_df = pd.DataFrame(qc_list).pivot(index='Source File', columns='QCID', values='Concentration').reset_index()
-            excel_tabs["QC"] = qc_df
+        # Build QC DataFrame with limits at the top
+        if qc_file_data:
+            qc_columns = ['Acquisition Date', 'SUBJECT ID', 'LQC, HQC ID', 'MQC, MMQC ID', 'LQC', 'MMQC', 'MQC', 'HQC']
+            row_nom_qc = {'MQC, MMQC ID': 'Nominal'}; row_low_qc = {'MQC, MMQC ID': 'Lower limit'}; row_up_qc = {'MQC, MMQC ID': 'Upper limit'}
+            for qc in ['LQC', 'MMQC', 'MQC', 'HQC']:
+                val = nominals.get(qc, "")
+                row_nom_qc[qc] = val
+                if val != "":
+                    limit = 0.20 if qc == 'LQC' else 0.15
+                    row_low_qc[qc] = val * (1 - limit)
+                    row_up_qc[qc] = val * (1 + limit)
+                    
+            qc_df = pd.concat([pd.DataFrame([row_nom_qc, row_low_qc, row_up_qc]), pd.DataFrame(qc_file_data)], ignore_index=True)
+            excel_tabs["QC"] = qc_df[qc_columns]
 
         # --- 4. EXPORT TO EXCEL WITH XlsxWriter STATS & FORMATTING ---
         output = io.BytesIO()
         with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
             
-            if "Summary" in excel_tabs:
-                excel_tabs["Summary"].to_excel(writer, sheet_name="Summary", index=False)
-            for sheet_name, df_tab in excel_tabs.items():
-                if sheet_name != "Summary":
-                     df_tab.to_excel(writer, sheet_name=sheet_name, index=False)
+            excel_tabs["Summary"].to_excel(writer, sheet_name="Summary", index=False)
+            if "CC" in excel_tabs: excel_tabs["CC"].to_excel(writer, sheet_name="CC", index=False)
+            if "QC" in excel_tabs: excel_tabs["QC"].to_excel(writer, sheet_name="QC", index=False)
             
             workbook = writer.book
             
@@ -217,50 +260,48 @@ if st.button("Generate Dashboard"):
                 worksheet = writer.sheets[sheet_name]
                 for col_num, value in enumerate(writer.sheets[sheet_name].table[0]):
                     worksheet.write(0, col_num, value, header_format)
-                worksheet.set_column('A:A', 35) 
+                worksheet.set_column('A:A', 25) 
                 worksheet.set_column('B:Z', 15)
 
-            # INJECT STATS & CONDITIONAL FORMATTING
+            # --- INJECT STATS & CONDITIONAL FORMATTING ---
             for target_sheet in ["CC", "QC"]:
                 if target_sheet in excel_tabs:
                     ws = writer.sheets[target_sheet]
                     df_target = excel_tabs[target_sheet]
                     
-                    num_rows = len(df_target)
-                    num_cols = len(df_target.columns)
+                    num_rows = len(df_target) # Data + limits
+                    stat_row = num_rows + 1   # 1-indexed for xlsxwriter
                     
-                    stat_row = num_rows + 2
+                    # Write labels in Col C for CC, and Col B for QC (Matches VBA)
+                    label_col = 2 if target_sheet == "CC" else 1
+                    ws.write(stat_row, label_col, "Mean", bold_label)
+                    ws.write(stat_row + 1, label_col, "SD", bold_label)
+                    ws.write(stat_row + 2, label_col, "%CV", bold_label)
+                    ws.write(stat_row + 3, label_col, "%Accuracy", bold_label)
                     
-                    ws.write(stat_row, 0, "Mean", bold_label)
-                    ws.write(stat_row + 1, 0, "SD", bold_label)
-                    ws.write(stat_row + 2, 0, "%CV", bold_label)
-                    ws.write(stat_row + 3, 0, "%Accuracy", bold_label)
+                    start_col = 3 if target_sheet == "CC" else 4
+                    end_col = len(std_names) + 3 if target_sheet == "CC" else 8
                     
-                    for col_num in range(1, num_cols):
+                    for col_num in range(start_col, end_col):
                         col_letter = xl_col_to_name(col_num)
-                        col_name = df_target.columns[col_num]
-                        data_range = f"{col_letter}2:{col_letter}{num_rows + 1}"
                         
-                        ws.write_formula(stat_row, col_num, f"=AVERAGE({data_range})", float_fmt)
-                        ws.write_formula(stat_row + 1, col_num, f"=STDEV.S({data_range})", float_fmt)
-                        ws.write_formula(stat_row + 2, col_num, f"=IF({col_letter}{stat_row + 1}=0, 0, {col_letter}{stat_row + 1}/{col_letter}{stat_row})", pct_fmt)
+                        # Data range strictly points to the actual batch files (Rows 5 down to num_rows+1)
+                        data_range = f"{col_letter}5:{col_letter}{num_rows + 1}"
                         
-                        if col_name in nominals:
-                            nom_val = nominals[col_name]
-                            
-                            ws.write_formula(stat_row + 3, col_num, f"=({col_letter}{stat_row}/{nom_val})", pct_fmt)
-                            
-                            limit = 0.20 if ('A' in col_name or 'LQC' in col_name or '1' in col_name) else 0.15
-                            lower_bound = nom_val * (1 - limit)
-                            upper_bound = nom_val * (1 + limit)
-                            
-                            ws.conditional_format(data_range, {
-                                'type': 'formula',
-                                'criteria': f"=OR(ISBLANK({col_letter}2), {col_letter}2<{lower_bound}, {col_letter}2>{upper_bound})",
-                                'format': yellow_flag
-                            })
+                        # Safe Formulas: Removed .S from STDEV to fix #NAME? error, added IFERROR
+                        ws.write_formula(stat_row, col_num, f"=IFERROR(AVERAGE({data_range}), \"\")", float_fmt)
+                        ws.write_formula(stat_row + 1, col_num, f"=IFERROR(STDEV({data_range}), \"\")", float_fmt)
+                        ws.write_formula(stat_row + 2, col_num, f"=IFERROR(({col_letter}{stat_row + 2}/{col_letter}{stat_row + 1}), \"\")", pct_fmt)
+                        ws.write_formula(stat_row + 3, col_num, f"=IFERROR(({col_letter}{stat_row + 1}/{col_letter}2), \"\")", pct_fmt)
+                        
+                        # Conditional Formatting: Highlight yellow if outside Row 3 (Lower) and Row 4 (Upper)
+                        ws.conditional_format(data_range, {
+                            'type': 'formula',
+                            'criteria': f"=AND(ISNUMBER({col_letter}5), OR({col_letter}5<{col_letter}$3, {col_letter}5>{col_letter}$4))",
+                            'format': yellow_flag
+                        })
 
-        st.success("Dashboard successfully generated with ICH M10 Formatting!")
+        st.success("Dashboard successfully generated with CC & QC Statistical Formatting!")
         st.download_button(
             label="Download Master Excel Dashboard",
             data=output.getvalue(),
