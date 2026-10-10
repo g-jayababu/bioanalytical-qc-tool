@@ -1,5 +1,6 @@
 import streamlit as st
 import pandas as pd
+import numpy as np
 import io
 import re
 from xlsxwriter.utility import xl_col_to_name
@@ -188,17 +189,18 @@ if st.button("Generate Dashboard"):
                 s_is_area = pd.to_numeric(row[is_area_col], errors='coerce')
                 if pd.isna(conc): conc = ""
                 
+                # Plot Engine: Route % Differences using np.nan for empty spaces
                 inj_order_list.append(current_inj)
                 if pd.notna(s_is_area) and pd.notna(avg_is_area) and avg_is_area > 0:
                     pct_diff = (s_is_area / avg_is_area) * 100 - 100
                     if 'STANDARD' in s_type or 'QC' in s_type or 'QUALITY' in s_type:
-                        ccqc_is_list.append(pct_diff); blank_is_list.append(None); samp_is_list.append(None)
+                        ccqc_is_list.append(pct_diff); blank_is_list.append(np.nan); samp_is_list.append(np.nan)
                     elif 'BLANK' in s_type or '-BLK' in s_name or '+IS' in s_name:
-                        ccqc_is_list.append(None); blank_is_list.append(pct_diff); samp_is_list.append(None)
+                        ccqc_is_list.append(np.nan); blank_is_list.append(pct_diff); samp_is_list.append(np.nan)
                     else:
-                        ccqc_is_list.append(None); blank_is_list.append(None); samp_is_list.append(pct_diff)
+                        ccqc_is_list.append(np.nan); blank_is_list.append(np.nan); samp_is_list.append(pct_diff)
                 else:
-                    ccqc_is_list.append(None); blank_is_list.append(None); samp_is_list.append(None)
+                    ccqc_is_list.append(np.nan); blank_is_list.append(np.nan); samp_is_list.append(np.nan)
                 
                 current_inj += 1
                 
@@ -302,6 +304,7 @@ if st.button("Generate Dashboard"):
             
             workbook = writer.book
             
+            # --- DEFINE FORMATTING STYLES ---
             header_format = workbook.add_format({'bold': True, 'bg_color': '#C6E0B4', 'border': 1, 'align': 'center', 'valign': 'vcenter'})
             yellow_flag = workbook.add_format({'bg_color': '#FFFF00', 'bold': True, 'font_color': '#FF0000'})
             bold_label = workbook.add_format({'bold': True, 'align': 'right'})
@@ -316,10 +319,11 @@ if st.button("Generate Dashboard"):
             merge_fmt = workbook.add_format({'align': 'center', 'valign': 'vcenter'})
             
             # --- APPLY COLUMN FORMATTING AND CHARTS ---
-            for sheet_name in writer.sheets:
+            for sheet_name, df_tab in excel_tabs.items():
                 worksheet = writer.sheets[sheet_name]
                 
-                for col_num, value in enumerate(writer.sheets[sheet_name].table[0]):
+                # Robust Header Writing
+                for col_num, value in enumerate(df_tab.columns):
                     worksheet.write(0, col_num, value, header_format)
                     
                 worksheet.set_column('A:A', 25) 
@@ -344,11 +348,10 @@ if st.button("Generate Dashboard"):
                     # INDIVIDUAL BATCH TABS - Format Data
                     worksheet.set_column('B:E', 15, general_fmt)
                     
-                    # Hide the calculation columns (F through I / Index 5 to 8)
-                    worksheet.set_column('F:I', None, None, {'hidden': True})
+                    # Hide the calculation columns using explicitly numeric ranges (Columns 5 through 8)
+                    worksheet.set_column(5, 8, None, None, {'hidden': True})
                     
-                    df_target = excel_tabs[sheet_name]
-                    max_row = len(df_target)
+                    max_row = len(df_tab)
                     
                     if max_row > 0:
                         chart = workbook.add_chart({'type': 'scatter'})
@@ -357,21 +360,24 @@ if st.button("Generate Dashboard"):
                             'name': 'Samples',
                             'categories': [sheet_name, 1, 5, max_row, 5],
                             'values':     [sheet_name, 1, 8, max_row, 8],
-                            'marker': {'type': 'circle', 'fill': {'color': '#5B9BD5'}, 'border': {'color': '#5B9BD5'}},
+                            'marker': {'type': 'circle', 'size': 6, 'fill': {'color': '#5B9BD5'}, 'border': {'color': '#5B9BD5'}},
+                            'line':   {'none': True}
                         })
                         
                         chart.add_series({
                             'name': 'Blank',
                             'categories': [sheet_name, 1, 5, max_row, 5],
                             'values':     [sheet_name, 1, 7, max_row, 7],
-                            'marker': {'type': 'circle', 'fill': {'color': '#ED7D31'}, 'border': {'color': '#ED7D31'}},
+                            'marker': {'type': 'circle', 'size': 6, 'fill': {'color': '#ED7D31'}, 'border': {'color': '#ED7D31'}},
+                            'line':   {'none': True}
                         })
                         
                         chart.add_series({
                             'name': 'CCQC',
                             'categories': [sheet_name, 1, 5, max_row, 5],
                             'values':     [sheet_name, 1, 6, max_row, 6],
-                            'marker': {'type': 'circle', 'fill': {'color': '#FF0000'}, 'border': {'color': '#A6A6A6'}},
+                            'marker': {'type': 'circle', 'size': 6, 'fill': {'color': '#FF0000'}, 'border': {'color': '#A6A6A6'}},
+                            'line':   {'none': True}
                         })
                         
                         chart.set_title({'name': 'IS Variation Plot', 'name_font': {'size': 12, 'name': 'Arial'}})
@@ -380,7 +386,7 @@ if st.button("Generate Dashboard"):
                         chart.set_legend({'position': 'right'})
                         chart.set_size({'width': 425, 'height': 227})
                         
-                        # CRITICAL FIX: Force Excel to plot data located in the hidden F:I columns
+                        # CRITICAL: Force Excel to render plot data located in the hidden columns
                         chart.show_hidden_data()
                         
                         worksheet.insert_chart('K2', chart)
@@ -439,7 +445,7 @@ if st.button("Generate Dashboard"):
                             'format': yellow_flag
                         })
 
-        st.success("Dashboard successfully generated with Visible IS Variation Plots!")
+        st.success("Dashboard successfully generated with Automated IS Variation Plots!")
         st.download_button(
             label="Download Master Excel Dashboard",
             data=output.getvalue(),
