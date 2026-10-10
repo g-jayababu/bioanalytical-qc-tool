@@ -120,8 +120,9 @@ if st.button("Generate Dashboard"):
             is_area_col = next((c for c in df.columns if ('is area' in c or 'is peak area' in c or 'istd' in c) and 'ratio' not in c and 'analyte' not in c), None)
             conc_col = next((c for c in df.columns if 'calc' in c and 'conc' in c), None)
             acc_col = next((c for c in df.columns if 'accur' in c), None)
-            analyte_area_col = next((c for c in df.columns if 'area' in c and 'is' not in c and 'ratio' not in c and 'analyte' not in c), None)
-            if not analyte_area_col: analyte_area_col = next((c for c in df.columns if c == 'area'), None)
+            
+            # Robust extraction of the Analyte Area (the Area column that is NOT the IS Area)
+            analyte_area_col = next((c for c in df.columns if 'area' in c and 'ratio' not in c and c != is_area_col), None)
             
             date_col = next((c for c in df.columns if 'acq date' in c or 'acquisition date' in c or 'date/time' in c or 'date' in c), None)
             acq_date = ""
@@ -208,8 +209,6 @@ if st.button("Generate Dashboard"):
                     above_uloq.append({'name': s_name, 'conc': conc})
 
                 row_dict = {"Sample Name": s_name, "Area": a_area, "IS area": s_is_area, "Calc.Conc.": conc, "% Accuracy": acc_val}
-                
-                # Plot Engine: 5 elements (Inj Order, CCQC IS%, Blank IS%, Sample IS%, Subject Conc)
                 chart_tuple = [current_inj, np.nan, np.nan, np.nan, np.nan]
                 
                 if pd.notna(s_is_area) and pd.notna(avg_is_area) and avg_is_area > 0:
@@ -218,7 +217,6 @@ if st.button("Generate Dashboard"):
                     elif 'BLANK' in s_type or '-BLK' in s_name or '+IS' in s_name: chart_tuple[2] = pct_diff
                     else: chart_tuple[3] = pct_diff
                 
-                # Subject Concentration Chart Tracker
                 if 'UNKNOWN' in s_type and 'AQSTD' not in s_name and 'BLK' not in s_name and '+IS' not in s_name and 'BLANK' not in s_name:
                     chart_tuple[4] = conc
 
@@ -333,9 +331,7 @@ if st.button("Generate Dashboard"):
             
             workbook = writer.book
             
-            # --- DEFINE FORMATTING STYLES ---
             tnr = {'font_name': 'Times New Roman', 'font_size': 10}
-            
             green_sheet_bg = workbook.add_format({**tnr, 'bg_color': '#CDE4CE'})
             header_format = workbook.add_format({**tnr, 'bold': True, 'bg_color': '#C6E0B4', 'border': 1, 'align': 'center', 'valign': 'vcenter'})
             yellow_flag = workbook.add_format({**tnr, 'bg_color': '#FFFF00', 'bold': True, 'font_color': '#FF0000'})
@@ -358,7 +354,6 @@ if st.button("Generate Dashboard"):
             table_header_green = workbook.add_format({**tnr, 'bold': True, 'bg_color': '#C6E0B4', 'border': 1, 'align': 'center', 'valign': 'vcenter'})
             table_header_gray = workbook.add_format({**tnr, 'bold': True, 'bg_color': '#D9D9D9', 'border': 1, 'align': 'center', 'valign': 'vcenter'})
 
-            # --- RENDER SUMMARY, CC, QC ---
             for sheet_name in ["Summary", "CC", "QC"]:
                 if sheet_name in excel_tabs:
                     df_tab = excel_tabs[sheet_name]
@@ -384,7 +379,6 @@ if st.button("Generate Dashboard"):
                         worksheet.set_column(1, 3, 15, general_fmt)
                         worksheet.set_column(4, 7, 15, conc_fmt)
 
-            # --- INDIVIDUAL BATCH TABS - FULL LAYOUT ---
             for safe_sheet_name, meta in batch_meta_data.items():
                 ws = workbook.add_worksheet(safe_sheet_name)
                 final_rows = meta['rows']
@@ -429,7 +423,7 @@ if st.button("Generate Dashboard"):
                     ws.write(r_idx, 27, "" if pd.isna(c_tuple[1]) else c_tuple[1])
                     ws.write(r_idx, 28, "" if pd.isna(c_tuple[2]) else c_tuple[2])
                     ws.write(r_idx, 29, "" if pd.isna(c_tuple[3]) else c_tuple[3])
-                    ws.write(r_idx, 30, "" if pd.isna(c_tuple[4]) else c_tuple[4]) # Subject-only Conc Column
+                    ws.write(r_idx, 30, "" if pd.isna(c_tuple[4]) else c_tuple[4])
 
                 ws.set_column(26, 30, None, None, {'hidden': True})
                 
@@ -482,7 +476,6 @@ if st.button("Generate Dashboard"):
                     ws.insert_chart('G18', chart1)
                     
                     chart2 = workbook.add_chart({'type': 'scatter', 'subtype': 'straight_with_markers'})
-                    # Pointing to Column AE (30) which strictly contains only the Unknown Subject Samples
                     chart2.add_series({'name': 'Concentration', 'categories': [safe_sheet_name, 1, 26, max_row-1, 26], 'values': [safe_sheet_name, 1, 30, max_row-1, 30], 'marker': {'type': 'diamond', 'size': 5, 'fill': {'color': '#4F81BD'}, 'border': {'color': '#4F81BD'}}, 'line': {'color': '#4F81BD', 'width': 1.5}})
                     chart2.set_title({'name': 'Chart Title', 'name_font': {'size': 14, 'bold': True, 'name': 'Times New Roman'}})
                     chart2.set_x_axis({'major_gridlines': {'visible': False}, 'num_font': {'name': 'Times New Roman'}})
@@ -490,7 +483,7 @@ if st.button("Generate Dashboard"):
                     chart2.set_legend({'none': True})
                     chart2.set_size({'width': 450, 'height': 230})
                     chart2.show_hidden_data()
-                    chart2.show_blanks_as('span') # Tells Excel to bridge gaps where CC/QC/Blanks are injected
+                    chart2.show_blanks_as('span')
                     ws.insert_chart('G30', chart2)
                     
                     or_start = 45
@@ -511,7 +504,6 @@ if st.button("Generate Dashboard"):
                         ws.write(or_start + 1 + i, 8, smp['name'], data_white)
                         ws.write(or_start + 1 + i, 9, smp['conc'], data_yellow_float)
 
-            # Formats for CC and QC Standard Sheets
             for target_sheet in ["CC", "QC"]:
                 if target_sheet in excel_tabs:
                     ws = writer.sheets[target_sheet]
@@ -553,7 +545,6 @@ if st.button("Generate Dashboard"):
                         ws.write_formula(stat_row + 3, col_num, f"=IFERROR(({col_letter}{stat_row + 1}/{col_letter}2)*100, \"\")", pct_fmt)
                         ws.conditional_format(data_range, {'type': 'formula', 'criteria': f"=AND(ISNUMBER({col_letter}5), OR({col_letter}5<{col_letter}$3, {col_letter}5>{col_letter}$4))", 'format': yellow_flag})
 
-            # Concentration Matrix Tab
             ws_conc = workbook.add_worksheet("Concentration Data")
             ws_conc.set_column('A:E', 20, general_fmt)
             ws_conc.merge_range('A1:B1', "Molecule Name", header_format)
@@ -584,7 +575,7 @@ if st.button("Generate Dashboard"):
                 ws_conc.write(row_idx, 4, s_name, general_fmt)
                 row_idx += 1
 
-        st.success("Dashboard successfully generated with Subject-Only line charts!")
+        st.success("Dashboard generated. Missing area resolved.")
         st.download_button(
             label="Download Master Excel Dashboard",
             data=output.getvalue(),
