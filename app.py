@@ -17,11 +17,14 @@ with col2:
 def load_data(file):
     """Smart reader that handles CSV, XLSX, true XLS, and disguised TSV instrument exports."""
     try:
-        if file.name.endswith('.csv'):
+        # Convert file name to lowercase to handle .XLS vs .xls
+        file_name_lower = file.name.lower()
+        
+        if file_name_lower.endswith('.csv'):
             return pd.read_csv(file)
-        elif file.name.endswith('.xlsx'):
+        elif file_name_lower.endswith('.xlsx'):
             return pd.read_excel(file, engine='openpyxl')
-        elif file.name.endswith('.xls'):
+        elif file_name_lower.endswith('.xls'):
             try:
                 return pd.read_excel(file, engine='xlrd')
             except Exception:
@@ -35,23 +38,13 @@ if st.button("Generate Dashboard"):
         st.success("Files received! Processing data...")
         
         # --- 1. EXTRACT DATA FROM SETUP FILE ---
-        # We read without headers so we can target exact row/column indices (0-indexed)
         setup_df = pd.read_excel(setup_file, header=None)
         
-        # Cell B1 (Row 0, Col 1) = Molecule Name
         mol_name = str(setup_df.iloc[0, 1]).strip()
-        
-        # Cell B2 (Row 1, Col 1) = Study Number
         study_num = str(setup_df.iloc[1, 1]).strip()
-        
-        # Cell B6 (Row 5, Col 1) = LLOQ
         lloq = pd.to_numeric(setup_df.iloc[5, 1], errors='coerce')
-        
-        # Cell B7 (Row 6, Col 1) = ULOQ
         uloq = pd.to_numeric(setup_df.iloc[6, 1], errors='coerce')
         
-        # Rows 9 and below (Index 8 onwards): Nominal Concentrations
-        # Column A (Col 0) = ID, Column B (Col 1) = Nominal Value
         nominals = {}
         for index in range(8, len(setup_df)):
             cc_id = str(setup_df.iloc[index, 0]).strip().upper()
@@ -60,7 +53,6 @@ if st.button("Generate Dashboard"):
             if cc_id != 'NAN' and cc_id != 'NONE' and pd.notna(nom_val):
                 nominals[cc_id] = nom_val
 
-        # Display extracted setup data to confirm it worked
         st.info(f"Setup Loaded | Molecule: {mol_name} | Study: {study_num} | LLOQ: {lloq} | ULOQ: {uloq}")
         st.write(f"Loaded {len(nominals)} nominal concentrations (e.g., {list(nominals.items())[:3]}...)")
 
@@ -142,3 +134,43 @@ if st.button("Generate Dashboard"):
                 "Duplicate CC & QC": "Yes" if file_dupes else "No",
                 "Duplicate Samples": "Yes" if file_sample_dupes else "No",
                 "Out of Range IS Count": len(out_of_range_is),
+                "Above ULOQ Count": len(above_uloq)
+            })
+            
+        # --- 3. BUILD FINAL SUMMARY TABS ---
+        excel_tabs["Summary"] = pd.DataFrame(summary_log)
+        
+        cc_data = [{"CCID": k, "Source File": v['file'], "Concentration": v['conc']} for k, v in global_ccqc_ids.items() if 'CC' in k or 'STD' in k]
+        if cc_data: excel_tabs["CC"] = pd.DataFrame(cc_data)
+
+        qc_data = [{"QC ID": k, "Source File": v['file'], "Concentration": v['conc']} for k, v in global_ccqc_ids.items() if 'QC' in k]
+        if qc_data: excel_tabs["QC"] = pd.DataFrame(qc_data)
+
+        # --- 4. EXPORT TO EXCEL ---
+        output = io.BytesIO()
+        with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
+            if "Summary" in excel_tabs:
+                excel_tabs["Summary"].to_excel(writer, sheet_name="Summary", index=False)
+                
+            for sheet_name, df_tab in excel_tabs.items():
+                if sheet_name != "Summary":
+                     df_tab.to_excel(writer, sheet_name=sheet_name, index=False)
+            
+            workbook  = writer.book
+            header_format = workbook.add_format({'bold': True, 'bg_color': '#C6E0B4', 'border': 1, 'align': 'center', 'valign': 'vcenter'})
+            
+            for sheet_name in writer.sheets:
+                worksheet = writer.sheets[sheet_name]
+                for col_num, value in enumerate(writer.sheets[sheet_name].table[0]):
+                    worksheet.write(0, col_num, value, header_format)
+                worksheet.set_column('A:F', 20)
+
+        st.success("Dashboard successfully generated!")
+        st.download_button(
+            label="Download Master Excel Dashboard",
+            data=output.getvalue(),
+            file_name="Master_Bioanalytical_Dashboard.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        )
+    else:
+        st.error("Please upload BOTH the Setup file and the TSQ Export file(s).")
