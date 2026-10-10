@@ -16,9 +16,6 @@ with col2:
 def load_data(file):
     """Smart reader that handles true Excel files and UTF-16 TSQ text files disguised as .xls"""
     file_name_lower = file.name.lower()
-    
-    # We use names=range(100) to force pandas to accept varying column counts
-    # This prevents the "Expected 1 fields, saw 6" tokenizing crash
     dummy_cols = list(range(100))
     
     if file_name_lower.endswith('.csv'):
@@ -90,7 +87,6 @@ if st.button("Generate Dashboard"):
                 summary_log.append({"File Name": file.name, "Status": "FAILED", "Error Details": error_msg})
                 continue
                 
-            # Clean up the dummy columns and rows
             df = df.dropna(how='all')
             df = df.dropna(how='all', axis=1)
             df = df.reset_index(drop=True)
@@ -110,12 +106,12 @@ if st.button("Generate Dashboard"):
             else:
                 df.columns = [str(c).lower().strip() for c in df.columns]
 
-            # Drop any remaining dummy columns that evaluate to 'nan'
             df = df.loc[:, ~df.columns.str.contains('^nan$', case=False, na=False)]
 
+            # Broader search terms to catch variations like "IS Peak Area"
             name_col = next((c for c in df.columns if 'sample name' in c or 'sample' in c), None)
             type_col = next((c for c in df.columns if 'sample type' in c or 'type' in c), None)
-            is_area_col = next((c for c in df.columns if 'is area' in c or 'istd' in c), None)
+            is_area_col = next((c for c in df.columns if ('is area' in c or 'is peak area' in c or 'istd' in c) and 'ratio' not in c and 'analyte' not in c), None)
             conc_col = next((c for c in df.columns if 'calc' in c and 'conc' in c), None)
             acc_col = next((c for c in df.columns if 'accur' in c), None)
             
