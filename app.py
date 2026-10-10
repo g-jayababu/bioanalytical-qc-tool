@@ -177,7 +177,6 @@ if st.button("Generate Dashboard"):
             samp_is_list = []
             current_inj = 1
             
-            # Calculate Baseline Mean IS Area (CCs and QCs only)
             cc_qc_df = df[df[type_col].str.contains('Standard|QC|Quality', case=False, na=False)].copy()
             cc_qc_df[is_area_col] = pd.to_numeric(cc_qc_df[is_area_col], errors='coerce')
             avg_is_area = cc_qc_df[is_area_col].mean()
@@ -189,7 +188,6 @@ if st.button("Generate Dashboard"):
                 s_is_area = pd.to_numeric(row[is_area_col], errors='coerce')
                 if pd.isna(conc): conc = ""
                 
-                # Plot Engine: Route % Differences into categorical columns for xlsxwriter
                 inj_order_list.append(current_inj)
                 if pd.notna(s_is_area) and pd.notna(avg_is_area) and avg_is_area > 0:
                     pct_diff = (s_is_area / avg_is_area) * 100 - 100
@@ -236,10 +234,8 @@ if st.button("Generate Dashboard"):
                 }
                 qc_file_data.append(q_dict)
                 
-            # Build Clean Individual Batch Sheet
             clean_df = df[[name_col, type_col, is_area_col, conc_col, acc_col]].copy()
             clean_df.columns = ["Sample Name", "Sample Type", "IS Area", "Calc. Conc.", "% Accuracy"]
-            # Append hidden chart calculation columns
             clean_df["Inj Order"] = inj_order_list
             clean_df["CCQC IS%"] = ccqc_is_list
             clean_df["Blank IS%"] = blank_is_list
@@ -306,7 +302,6 @@ if st.button("Generate Dashboard"):
             
             workbook = writer.book
             
-            # --- DEFINE FORMATTING STYLES ---
             header_format = workbook.add_format({'bold': True, 'bg_color': '#C6E0B4', 'border': 1, 'align': 'center', 'valign': 'vcenter'})
             yellow_flag = workbook.add_format({'bg_color': '#FFFF00', 'bold': True, 'font_color': '#FF0000'})
             bold_label = workbook.add_format({'bold': True, 'align': 'right'})
@@ -356,10 +351,8 @@ if st.button("Generate Dashboard"):
                     max_row = len(df_target)
                     
                     if max_row > 0:
-                        # Draw IS Scatter Chart
                         chart = workbook.add_chart({'type': 'scatter'})
                         
-                        # Add Sample Series (Col I / Index 8)
                         chart.add_series({
                             'name': 'Samples',
                             'categories': [sheet_name, 1, 5, max_row, 5],
@@ -367,7 +360,6 @@ if st.button("Generate Dashboard"):
                             'marker': {'type': 'circle', 'fill': {'color': '#5B9BD5'}, 'border': {'color': '#5B9BD5'}},
                         })
                         
-                        # Add Blank Series (Col H / Index 7)
                         chart.add_series({
                             'name': 'Blank',
                             'categories': [sheet_name, 1, 5, max_row, 5],
@@ -375,7 +367,6 @@ if st.button("Generate Dashboard"):
                             'marker': {'type': 'circle', 'fill': {'color': '#ED7D31'}, 'border': {'color': '#ED7D31'}},
                         })
                         
-                        # Add CCQC Series (Col G / Index 6)
                         chart.add_series({
                             'name': 'CCQC',
                             'categories': [sheet_name, 1, 5, max_row, 5],
@@ -383,16 +374,15 @@ if st.button("Generate Dashboard"):
                             'marker': {'type': 'circle', 'fill': {'color': '#FF0000'}, 'border': {'color': '#A6A6A6'}},
                         })
                         
-                        # Configure exact chart appearance
                         chart.set_title({'name': 'IS Variation Plot', 'name_font': {'size': 12, 'name': 'Arial'}})
                         chart.set_x_axis({'name': 'Injection Order', 'major_gridlines': {'visible': False}})
                         chart.set_y_axis({'name': '% Difference from Mean IS', 'major_gridlines': {'visible': True}, 'num_format': '0.00'})
                         chart.set_legend({'position': 'right'})
-                        
-                        # Set size to exactly 425x227 pixels (approx 15cm x 8cm)
                         chart.set_size({'width': 425, 'height': 227})
                         
-                        # Insert chart into column K (Index 10)
+                        # CRITICAL FIX: Force Excel to plot data located in the hidden F:I columns
+                        chart.show_hidden_data()
+                        
                         worksheet.insert_chart('K2', chart)
 
             # --- INJECT STATS & MERGE FORMATTING ---
@@ -449,7 +439,7 @@ if st.button("Generate Dashboard"):
                             'format': yellow_flag
                         })
 
-        st.success("Dashboard successfully generated with Automated IS Variation Plots!")
+        st.success("Dashboard successfully generated with Visible IS Variation Plots!")
         st.download_button(
             label="Download Master Excel Dashboard",
             data=output.getvalue(),
