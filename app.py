@@ -197,10 +197,20 @@ if st.button("Generate Dashboard"):
                 
             summary_log.append({"File Name": file.name, "Status": "SUCCESS", "Error Details": "Processed"})
 
-        # --- 3. CONSTRUCT VBA-STYLE DATAFRAMES ---
+        # --- 3. CONSTRUCT AND SORT VBA-STYLE DATAFRAMES ---
         excel_tabs["Summary"] = pd.DataFrame(summary_log)
         
+        # Helper function to extract trailing numbers for Natural Sorting (e.g., CC-2 before CC-10)
+        def extract_sort_num(val):
+            nums = re.findall(r'\d+', str(val))
+            return int(nums[-1]) if nums else 0
+
+        # Sort and build CC DataFrame
         if cc_file_data:
+            cc_df_data = pd.DataFrame(cc_file_data)
+            cc_df_data['Sort_Num'] = cc_df_data['CCID'].apply(extract_sort_num)
+            cc_df_data = cc_df_data.sort_values(by='Sort_Num').drop('Sort_Num', axis=1)
+            
             cc_columns = ['Date', 'SUBJECT ID', 'CCID'] + std_names + ['Slope', 'Intercept', 'r']
             row_nom_cc = {'CCID': 'Nominal'}; row_low_cc = {'CCID': 'Lower limit'}; row_up_cc = {'CCID': 'Upper limit'}
             for std in std_names:
@@ -211,10 +221,22 @@ if st.button("Generate Dashboard"):
                     row_low_cc[std] = val * (1 - limit)
                     row_up_cc[std] = val * (1 + limit)
             
-            cc_df = pd.concat([pd.DataFrame([row_nom_cc, row_low_cc, row_up_cc]), pd.DataFrame(cc_file_data)], ignore_index=True)
+            cc_df = pd.concat([pd.DataFrame([row_nom_cc, row_low_cc, row_up_cc]), cc_df_data], ignore_index=True)
             excel_tabs["CC"] = cc_df[cc_columns]
 
+        # Sort and build QC DataFrame
         if qc_file_data:
+            qc_df_data = pd.DataFrame(qc_file_data)
+            qc_df_data['Original_Index'] = qc_df_data.index
+            qc_df_data['Block'] = qc_df_data.index // 4
+            
+            # Find the sort number based on the first LQC ID in each 4-row block
+            block_sort_keys = qc_df_data.groupby('Block')['LQC, HQC ID'].first().apply(extract_sort_num)
+            qc_df_data['Sort_Num'] = qc_df_data['Block'].map(block_sort_keys)
+            
+            # Sort by the extracted number, keeping the 4 rows in each block locked together
+            qc_df_data = qc_df_data.sort_values(by=['Sort_Num', 'Block', 'Original_Index']).drop(['Sort_Num', 'Block', 'Original_Index'], axis=1)
+            
             qc_columns = ['Acquisition Date', 'SUBJECT ID', 'LQC, HQC ID', 'MQC, MMQC ID', 'LQC', 'MMQC', 'MQC', 'HQC']
             row_nom_qc = {'MQC, MMQC ID': 'Nominal'}; row_low_qc = {'MQC, MMQC ID': 'Lower limit'}; row_up_qc = {'MQC, MMQC ID': 'Upper limit'}
             for qc in ['LQC', 'MMQC', 'MQC', 'HQC']:
@@ -225,7 +247,7 @@ if st.button("Generate Dashboard"):
                     row_low_qc[qc] = val * (1 - limit)
                     row_up_qc[qc] = val * (1 + limit)
                     
-            qc_df = pd.concat([pd.DataFrame([row_nom_qc, row_low_qc, row_up_qc]), pd.DataFrame(qc_file_data)], ignore_index=True)
+            qc_df = pd.concat([pd.DataFrame([row_nom_qc, row_low_qc, row_up_qc]), qc_df_data], ignore_index=True)
             excel_tabs["QC"] = qc_df[qc_columns]
 
         # --- 4. EXPORT TO EXCEL WITH XlsxWriter STATS & FORMATTING ---
@@ -243,8 +265,6 @@ if st.button("Generate Dashboard"):
             bold_label = workbook.add_format({'bold': True, 'align': 'right'})
             float_fmt = workbook.add_format({'num_format': '0.000', 'align': 'center'})
             stdev_fmt = workbook.add_format({'num_format': '0.0000', 'align': 'center'})
-            
-            # Format %CV and %Accuracy to exactly 2 digits (e.g. 105.15) instead of standard Excel percentages
             pct_fmt = workbook.add_format({'num_format': '0.00', 'align': 'center'})
             
             for sheet_name in writer.sheets:
@@ -279,12 +299,8 @@ if st.button("Generate Dashboard"):
                         
                         ws.write_formula(stat_row, col_num, f"=IFERROR(AVERAGE({data_range}), \"\")", float_fmt)
                         ws.write_formula(stat_row + 1, col_num, f"=IFERROR(STDEV({data_range}), \"\")", stdev_fmt)
-                        
-                        # Corrected CV formula: (SD / Mean) * 100
-                        ws.write_formula(stat_row + 2, col_num, f"=IFERROR(({col_letter}{stat_row + 1}/{col_letter}{stat_row})*100, \"\")", pct_fmt)
-                        
-                        # Corrected Accuracy formula: (Mean / Nominal) * 100
-                        ws.write_formula(stat_row + 3, col_num, f"=IFERROR(({col_letter}{stat_row}/{col_letter}2)*100, \"\")", pct_fmt)
+                        ws.write_formula(stat_row + 2, col_num, f"=IFERROR(({col_letter}{stat_row + 2}/{col_letter}{stat_row + 1})*100, \"\")", pct_fmt)
+                        ws.write_formula(stat_row + 3, col_num, f"=IFERROR(({col_letter}{stat_row + 1}/{col_letter}2)*100, \"\")", pct_fmt)
                         
                         ws.conditional_format(data_range, {
                             'type': 'formula',
