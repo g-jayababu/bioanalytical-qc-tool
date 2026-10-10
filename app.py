@@ -1,6 +1,5 @@
 import streamlit as st
 import pandas as pd
-import numpy as np
 import io
 import re
 from xlsxwriter.utility import xl_col_to_name
@@ -171,7 +170,6 @@ if st.button("Generate Dashboard"):
             lqc_list, mmqc_list, mqc_list, hqc_list = [], [], [], []
             lqc_ids, mmqc_ids, mqc_ids, hqc_ids = [], [], [], []
             
-            # Arrays for IS Scatter Plot Variations
             inj_order_list = []
             ccqc_is_list = []
             blank_is_list = []
@@ -189,18 +187,17 @@ if st.button("Generate Dashboard"):
                 s_is_area = pd.to_numeric(row[is_area_col], errors='coerce')
                 if pd.isna(conc): conc = ""
                 
-                # Plot Engine: Route % Differences using np.nan for empty spaces
                 inj_order_list.append(current_inj)
                 if pd.notna(s_is_area) and pd.notna(avg_is_area) and avg_is_area > 0:
                     pct_diff = (s_is_area / avg_is_area) * 100 - 100
                     if 'STANDARD' in s_type or 'QC' in s_type or 'QUALITY' in s_type:
-                        ccqc_is_list.append(pct_diff); blank_is_list.append(np.nan); samp_is_list.append(np.nan)
+                        ccqc_is_list.append(pct_diff); blank_is_list.append(None); samp_is_list.append(None)
                     elif 'BLANK' in s_type or '-BLK' in s_name or '+IS' in s_name:
-                        ccqc_is_list.append(np.nan); blank_is_list.append(pct_diff); samp_is_list.append(np.nan)
+                        ccqc_is_list.append(None); blank_is_list.append(pct_diff); samp_is_list.append(None)
                     else:
-                        ccqc_is_list.append(np.nan); blank_is_list.append(np.nan); samp_is_list.append(pct_diff)
+                        ccqc_is_list.append(None); blank_is_list.append(None); samp_is_list.append(pct_diff)
                 else:
-                    ccqc_is_list.append(np.nan); blank_is_list.append(np.nan); samp_is_list.append(np.nan)
+                    ccqc_is_list.append(None); blank_is_list.append(None); samp_is_list.append(None)
                 
                 current_inj += 1
                 
@@ -242,7 +239,10 @@ if st.button("Generate Dashboard"):
             clean_df["CCQC IS%"] = ccqc_is_list
             clean_df["Blank IS%"] = blank_is_list
             clean_df["Sample IS%"] = samp_is_list
-            excel_tabs[file.name[:31]] = clean_df
+            
+            # Clean sheet name for Excel (max 31 chars, no illegal characters)
+            safe_sheet_name = re.sub(r'[\\/*?:\[\]]', '_', file.name)[:31]
+            excel_tabs[safe_sheet_name] = clean_df
             
             summary_log.append({"File Name": file.name, "Status": "SUCCESS", "Error Details": "Processed"})
 
@@ -298,9 +298,18 @@ if st.button("Generate Dashboard"):
         output = io.BytesIO()
         with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
             
-            excel_tabs["Summary"].to_excel(writer, sheet_name="Summary", index=False)
-            if "CC" in excel_tabs: excel_tabs["CC"].to_excel(writer, sheet_name="CC", index=False)
-            if "QC" in excel_tabs: excel_tabs["QC"].to_excel(writer, sheet_name="QC", index=False)
+            # WRITE ALL SHEETS TO THE EXCEL FILE FIRST
+            if "Summary" in excel_tabs:
+                excel_tabs["Summary"].to_excel(writer, sheet_name="Summary", index=False)
+                
+            for sheet_name, df_tab in excel_tabs.items():
+                if sheet_name not in ["Summary", "CC", "QC"]:
+                    df_tab.to_excel(writer, sheet_name=sheet_name, index=False)
+                    
+            if "CC" in excel_tabs: 
+                excel_tabs["CC"].to_excel(writer, sheet_name="CC", index=False)
+            if "QC" in excel_tabs: 
+                excel_tabs["QC"].to_excel(writer, sheet_name="QC", index=False)
             
             workbook = writer.book
             
@@ -322,7 +331,6 @@ if st.button("Generate Dashboard"):
             for sheet_name, df_tab in excel_tabs.items():
                 worksheet = writer.sheets[sheet_name]
                 
-                # Robust Header Writing
                 for col_num, value in enumerate(df_tab.columns):
                     worksheet.write(0, col_num, value, header_format)
                     
@@ -445,7 +453,7 @@ if st.button("Generate Dashboard"):
                             'format': yellow_flag
                         })
 
-        st.success("Dashboard successfully generated with Automated IS Variation Plots!")
+        st.success("Dashboard successfully generated with Visible IS Variation Plots!")
         st.download_button(
             label="Download Master Excel Dashboard",
             data=output.getvalue(),
