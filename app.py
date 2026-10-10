@@ -1,6 +1,6 @@
 import streamlit as st
 import pandas as pd
-import fitz  
+import fitz  # PyMuPDF
 from docxtpl import DocxTemplate
 
 st.title("Bioanalytical Auto-QC & Reporting")
@@ -16,20 +16,23 @@ with col3:
 
 if csv_file is not None:
     st.header("2. Data Preview")
-    df = pd.read_csv(csv_file)
+    
+    if csv_file.name.endswith('.csv'):
+        df = pd.read_csv(csv_file)
+    else:
+        df = pd.read_excel(csv_file)
+        
     st.dataframe(df.head())
 
 if st.button("Run QC and Generate Report"):
     if csv_file and pdf_file and docx_template:
         st.success("Files received! Processing data...")
         
-        # 1. Read the CSV into memory
-        # Check the file extension to decide how to read it
-if csv_file.name.endswith('.csv'):
-    df = pd.read_csv(csv_file)
-else:
-    # Use read_excel for .xls and .xlsx files
-    df = pd.read_excel(csv_file)
+        # 1. Read the file into memory again for processing
+        if csv_file.name.endswith('.csv'):
+            df = pd.read_csv(csv_file)
+        else:
+            df = pd.read_excel(csv_file)
         
         # 2. Clean the data: Drop any completely empty rows
         df = df.dropna(how='all')
@@ -38,9 +41,7 @@ else:
         st.write(f"Data loaded successfully. Total rows: {len(df)}")
         
         # 4. Separate the data into groups for QC checking
-        # We use a 'try/except' block so the app tells us what went wrong instead of crashing
         try:
-            # The TSQ software usually labels these in a 'Sample Type' column
             calibrators = df[df['Sample Type'] == 'Standard']
             qcs = df[df['Sample Type'] == 'QC']
             blank_samples = df[df['Sample Type'] == 'Blank']
@@ -48,12 +49,11 @@ else:
             
             st.info(f"Found {len(calibrators)} Calibrators, {len(qcs)} QCs, and {len(blank_samples)} Blanks.")
             
-            # Show a preview of just the QCs on the screen
             st.subheader("QC Samples Found:")
             st.dataframe(qcs.head())
             
         except KeyError:
-            st.error("Error: Could not find a column named 'Sample Type'. Please open your CSV in Excel and check the exact column header name.")
+            st.error("Error: Could not find a column named 'Sample Type'. Please open your export file and check the exact column header name.")
             
     else:
         st.error("Please upload all three files to proceed.")
