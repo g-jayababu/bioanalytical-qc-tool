@@ -333,11 +333,11 @@ if st.button("Generate Dashboard"):
             conc_fmt = workbook.add_format({**tnr, 'num_format': '0.000', 'align': 'center', 'valign': 'vcenter'})
             r_fmt = workbook.add_format({**tnr, 'num_format': '0.0000', 'align': 'center', 'valign': 'vcenter'})
             
+            float_fmt = workbook.add_format({**tnr, 'num_format': '0.000', 'align': 'center', 'valign': 'vcenter'})
             stdev_fmt = workbook.add_format({**tnr, 'num_format': '0.0000', 'align': 'center', 'valign': 'vcenter'})
             pct_fmt = workbook.add_format({**tnr, 'num_format': '0.00', 'align': 'center', 'valign': 'vcenter'})
             merge_fmt = workbook.add_format({**tnr, 'align': 'center', 'valign': 'vcenter'})
             
-            # Formats for Concentration Data Tab
             no_border_fmt = workbook.add_format({**tnr, 'align': 'left', 'valign': 'vcenter', 'bold': True})
             
             # --- APPLY COLUMN FORMATTING AND CHARTS ---
@@ -462,7 +462,6 @@ if st.button("Generate Dashboard"):
             ws_conc = workbook.add_worksheet("Concentration Data")
             ws_conc.set_column('A:E', 20, general_fmt)
             
-            # Top Headers
             ws_conc.merge_range('A1:B1', "Molecule Name", header_format)
             ws_conc.merge_range('C1:D1', mol_name, header_format)
             ws_conc.merge_range('A2:B2', "Study Number", header_format)
@@ -473,28 +472,23 @@ if st.button("Generate Dashboard"):
             uloq_fmt = f"{uloq:.3f}" if pd.notna(uloq) else "100.000"
             ws_conc.merge_range('C3:D3', f"{lloq_fmt} ng/mL to {uloq_fmt} ng/mL", header_format)
             
-            # Grid Headers
             conc_headers = ["Subject No.", "Period No.", "Timepoints", "Conc.(ng/mL)", "Sample Name"]
             for col_num, header in enumerate(conc_headers):
                 ws_conc.write(4, col_num, header, header_format)
                 
             row_idx = 5
             
-            # Parse unknown sample strings to emulate VBA grid population
             for s_name, conc in sorted(global_samples.items(), key=lambda x: extract_sort_num(x[0])):
-                # Apply BLQ logic
                 if pd.isna(conc) or (pd.notna(lloq) and conc < lloq):
                     display_conc = "BLQ"
                 else:
                     display_conc = conc
                 
-                # Heuristic split for Subject, Period, Timepoint based on common delimiters (-, _)
                 parts = re.split(r'[-_]', s_name)
                 subj = parts[0] if len(parts) > 0 else s_name
                 period = parts[1] if len(parts) > 1 else ""
                 timep = parts[2] if len(parts) > 2 else ""
                 
-                # Format to match VBA Subject Prefix mapping if possible
                 if subj.startswith('S') and subj[1:].isdigit():
                     subj = f"S{int(subj[1:]):02d}"
                     
