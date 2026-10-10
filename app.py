@@ -72,7 +72,7 @@ if st.button("Generate Dashboard"):
                     if 'STD' in cc_id or 'STANDARD' in cc_id:
                         std_names.append(cc_id)
             
-            std_names = sorted(std_names) # Match VBA alphabetical sorting
+            std_names = sorted(std_names)
             st.info(f"Setup Loaded | Molecule: {mol_name} | Study: {study_num}")
         except Exception as e:
             st.error(f"Failed to read Setup file. Error: {str(e)}")
@@ -96,7 +96,6 @@ if st.button("Generate Dashboard"):
             df = df.dropna(how='all', axis=1)
             df = df.reset_index(drop=True)
             
-            # Find the true header row
             header_idx = None
             for idx, row in df.iterrows():
                 row_string = str(row.values).lower()
@@ -104,7 +103,6 @@ if st.button("Generate Dashboard"):
                     header_idx = idx
                     break
             
-            # Extract Metadata (Slope, Intercept, Acq Date) before slicing the dataframe
             slope, intercept, r_val, acq_date = "", "", "", ""
             if header_idx is not None:
                 for idx, row in df.iloc[:header_idx].iterrows():
@@ -119,7 +117,6 @@ if st.button("Generate Dashboard"):
                         elif ('acq date' in val or 'date/time' in val) and c_idx + 1 < len(row):
                             acq_date = str(row.values[c_idx + 1])
             
-            # Slice dataframe to the actual table
             if header_idx is not None:
                 new_headers = df.iloc[header_idx]
                 df = df.iloc[header_idx + 1:].copy()
@@ -138,7 +135,6 @@ if st.button("Generate Dashboard"):
                 summary_log.append({"File Name": file.name, "Status": "FAILED", "Error Details": "Missing critical data columns."})
                 continue
             
-            # Extract Subject ID from Filename
             subj_id = "S1"
             match = re.search(r'(S\d+(?:[-_]S\d+)*)', file.name, re.IGNORECASE)
             if match:
@@ -148,7 +144,6 @@ if st.button("Generate Dashboard"):
             elif 'ISR' in file.name.upper():
                 subj_id = "ISR"
                 
-            # Extract First CCID
             ccid_str = "CC-01"
             for s_name in df[name_col]:
                 if 'CC-' in str(s_name).upper():
@@ -157,7 +152,6 @@ if st.button("Generate Dashboard"):
                         ccid_str = cc_match.group(0)
                         break
 
-            # --- BUILD VBA-STYLE DATA DICTIONARIES ---
             file_cc_dict = {'Date': acq_date, 'SUBJECT ID': subj_id, 'CCID': ccid_str}
             for std in std_names: file_cc_dict[std] = ""
             
@@ -169,13 +163,11 @@ if st.button("Generate Dashboard"):
                 conc = pd.to_numeric(row[conc_col], errors='coerce')
                 if pd.isna(conc): conc = ""
                 
-                # Map CCs dynamically
                 for std in std_names:
                     if std in s_name or std.replace("-", "") in s_name:
                         file_cc_dict[std] = conc
                         break
                 
-                # Map QCs dynamically
                 if 'LQC' in s_name:
                     lqc_list.append(conc); lqc_ids.append(s_name)
                 elif 'MMQC' in s_name:
@@ -190,7 +182,6 @@ if st.button("Generate Dashboard"):
             file_cc_dict['r'] = "" if pd.isna(r_val) else r_val
             cc_file_data.append(file_cc_dict)
             
-            # Generate exactly 4 rows for QCs (Matching VBA)
             for i in range(4):
                 q_dict = {
                     'Acquisition Date': acq_date if i==0 else "",
@@ -209,7 +200,6 @@ if st.button("Generate Dashboard"):
         # --- 3. CONSTRUCT VBA-STYLE DATAFRAMES ---
         excel_tabs["Summary"] = pd.DataFrame(summary_log)
         
-        # Build CC DataFrame with limits at the top
         if cc_file_data:
             cc_columns = ['Date', 'SUBJECT ID', 'CCID'] + std_names + ['Slope', 'Intercept', 'r']
             row_nom_cc = {'CCID': 'Nominal'}; row_low_cc = {'CCID': 'Lower limit'}; row_up_cc = {'CCID': 'Upper limit'}
@@ -224,7 +214,6 @@ if st.button("Generate Dashboard"):
             cc_df = pd.concat([pd.DataFrame([row_nom_cc, row_low_cc, row_up_cc]), pd.DataFrame(cc_file_data)], ignore_index=True)
             excel_tabs["CC"] = cc_df[cc_columns]
 
-        # Build QC DataFrame with limits at the top
         if qc_file_data:
             qc_columns = ['Acquisition Date', 'SUBJECT ID', 'LQC, HQC ID', 'MQC, MMQC ID', 'LQC', 'MMQC', 'MQC', 'HQC']
             row_nom_qc = {'MQC, MMQC ID': 'Nominal'}; row_low_qc = {'MQC, MMQC ID': 'Lower limit'}; row_up_qc = {'MQC, MMQC ID': 'Upper limit'}
@@ -249,11 +238,11 @@ if st.button("Generate Dashboard"):
             
             workbook = writer.book
             
-            # Formatting styles
             header_format = workbook.add_format({'bold': True, 'bg_color': '#C6E0B4', 'border': 1, 'align': 'center', 'valign': 'vcenter'})
             yellow_flag = workbook.add_format({'bg_color': '#FFFF00', 'bold': True, 'font_color': '#FF0000'})
             bold_label = workbook.add_format({'bold': True, 'align': 'right'})
             float_fmt = workbook.add_format({'num_format': '0.000', 'align': 'center'})
+            stdev_fmt = workbook.add_format({'num_format': '0.0000', 'align': 'center'})
             pct_fmt = workbook.add_format({'num_format': '0.0%', 'align': 'center'})
             
             for sheet_name in writer.sheets:
@@ -269,10 +258,9 @@ if st.button("Generate Dashboard"):
                     ws = writer.sheets[target_sheet]
                     df_target = excel_tabs[target_sheet]
                     
-                    num_rows = len(df_target) # Data + limits
-                    stat_row = num_rows + 1   # 1-indexed for xlsxwriter
+                    num_rows = len(df_target)
+                    stat_row = num_rows + 1 
                     
-                    # Write labels in Col C for CC, and Col B for QC (Matches VBA)
                     label_col = 2 if target_sheet == "CC" else 1
                     ws.write(stat_row, label_col, "Mean", bold_label)
                     ws.write(stat_row + 1, label_col, "SD", bold_label)
@@ -285,16 +273,13 @@ if st.button("Generate Dashboard"):
                     for col_num in range(start_col, end_col):
                         col_letter = xl_col_to_name(col_num)
                         
-                        # Data range strictly points to the actual batch files (Rows 5 down to num_rows+1)
                         data_range = f"{col_letter}5:{col_letter}{num_rows + 1}"
                         
-                        # Safe Formulas: Removed .S from STDEV to fix #NAME? error, added IFERROR
                         ws.write_formula(stat_row, col_num, f"=IFERROR(AVERAGE({data_range}), \"\")", float_fmt)
-                        ws.write_formula(stat_row + 1, col_num, f"=IFERROR(STDEV({data_range}), \"\")", float_fmt)
+                        ws.write_formula(stat_row + 1, col_num, f"=IFERROR(STDEV({data_range}), \"\")", stdev_fmt)
                         ws.write_formula(stat_row + 2, col_num, f"=IFERROR(({col_letter}{stat_row + 2}/{col_letter}{stat_row + 1}), \"\")", pct_fmt)
                         ws.write_formula(stat_row + 3, col_num, f"=IFERROR(({col_letter}{stat_row + 1}/{col_letter}2), \"\")", pct_fmt)
                         
-                        # Conditional Formatting: Highlight yellow if outside Row 3 (Lower) and Row 4 (Upper)
                         ws.conditional_format(data_range, {
                             'type': 'formula',
                             'criteria': f"=AND(ISNUMBER({col_letter}5), OR({col_letter}5<{col_letter}$3, {col_letter}5>{col_letter}$4))",
