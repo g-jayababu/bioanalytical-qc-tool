@@ -17,7 +17,6 @@ with col2:
     uploaded_files = st.file_uploader("Upload TSQ Quantis Plus Export Files", type=["csv", "xls", "xlsx"], accept_multiple_files=True)
 
 def load_data(file):
-    """Smart reader that handles true Excel files and UTF-16 TSQ text files disguised as .xls"""
     file_name_lower = file.name.lower()
     dummy_cols = list(range(100))
     
@@ -58,13 +57,11 @@ if st.button("Generate Dashboard"):
     if setup_file and uploaded_files:
         st.success("Files received! Processing data...")
         
-        # --- 1. EXTRACT DATA FROM SETUP FILE ---
         try:
             setup_df = pd.read_excel(setup_file, header=None, engine='openpyxl')
             mol_name = str(setup_df.iloc[0, 1]).strip()
             study_num = str(setup_df.iloc[1, 1]).strip()
             
-            # Extract additional VBA setup variables for Concentration Data tab
             num_subj_raw = setup_df.iloc[2, 1]
             num_subj = int(pd.to_numeric(num_subj_raw, errors='coerce')) if pd.notna(num_subj_raw) else 0
             periods = str(setup_df.iloc[3, 1]).strip()
@@ -90,7 +87,6 @@ if st.button("Generate Dashboard"):
             st.error(f"Failed to read Setup file. Error: {str(e)}")
             st.stop()
 
-        # --- 2. PROCESS INSTRUMENT FILES ---
         summary_log = []
         excel_tabs = {}
         cc_file_data = []
@@ -102,7 +98,14 @@ if st.button("Generate Dashboard"):
             df, error_msg = load_data(file)
             
             if df is None:
-                summary_log.append({"File Name": file.name, "Status": "FAILED", "Error Details": error_msg})
+                summary_log.append({
+                    "File Name": file.name, 
+                    "Status": "FAILED", 
+                    "Error Details": error_msg,
+                    "Nominal Conc. Check": "",
+                    "Duplicate CC & QC ID Check": "",
+                    "Duplicate Sample Name Check": ""
+                })
                 continue
                 
             df = df.dropna(how='all')
@@ -157,7 +160,14 @@ if st.button("Generate Dashboard"):
                 acq_date = pd.Timestamp.now().strftime('%d-%b-%Y').upper()
             
             if not all([name_col, type_col, is_area_col, conc_col]):
-                summary_log.append({"File Name": file.name, "Status": "FAILED", "Error Details": "Missing critical data columns."})
+                summary_log.append({
+                    "File Name": file.name, 
+                    "Status": "FAILED", 
+                    "Error Details": "Missing critical data columns.",
+                    "Nominal Conc. Check": "",
+                    "Duplicate CC & QC ID Check": "",
+                    "Duplicate Sample Name Check": ""
+                })
                 continue
             
             subj_id = "S1"
@@ -189,6 +199,11 @@ if st.button("Generate Dashboard"):
             samp_is_list = []
             current_inj = 1
             
+            file_dupes = []
+            file_sample_dupes = []
+            seen_ccqc = set()
+            seen_samples = set()
+            
             cc_qc_df = df[df[type_col].str.contains('Standard|QC|Quality', case=False, na=False)].copy()
             cc_qc_df[is_area_col] = pd.to_numeric(cc_qc_df[is_area_col], errors='coerce')
             avg_is_area = cc_qc_df[is_area_col].mean()
@@ -199,7 +214,6 @@ if st.button("Generate Dashboard"):
                 conc = pd.to_numeric(row[conc_col], errors='coerce')
                 s_is_area = pd.to_numeric(row[is_area_col], errors='coerce')
                 
-                # IS Plot Tracking
                 inj_order_list.append(current_inj)
                 if pd.notna(s_is_area) and pd.notna(avg_is_area) and avg_is_area > 0:
                     pct_diff = (s_is_area / avg_is_area) * 100 - 100
@@ -214,13 +228,24 @@ if st.button("Generate Dashboard"):
                 
                 current_inj += 1
                 
-                # Standards Mapping
+                # Deduplication logic for summary tab
+                if 'STANDARD' in s_type or 'QC' in s_type or 'QUALITY' in s_type:
+                    if s_name in seen_ccqc:
+                        file_dupes.append(s_name)
+                    else:
+                        seen_ccqc.add(s_name)
+                elif 'UNKNOWN' in s_type and 'AQSTD' not in s_name and 'BLK' not in s_name and '+IS' not in s_name:
+                    if s_name in seen_samples:
+                        file_sample_dupes.append(s_name)
+                    else:
+                        seen_samples.add(s_name)
+                        global_samples[s_name] = conc
+                
                 for std in std_names:
                     if std in s_name or std.replace("-", "") in s_name:
                         file_cc_dict[std] = conc if pd.notna(conc) else ""
                         break
                 
-                # QCs Mapping
                 if 'LQC' in s_name:
                     lqc_list.append(conc if pd.notna(conc) else ""); lqc_ids.append(s_name)
                 elif 'MMQC' in s_name:
@@ -229,10 +254,6 @@ if st.button("Generate Dashboard"):
                     mqc_list.append(conc if pd.notna(conc) else ""); mqc_ids.append(s_name)
                 elif 'HQC' in s_name:
                     hqc_list.append(conc if pd.notna(conc) else ""); hqc_ids.append(s_name)
-                    
-                # Store Unknowns for the Concentration Data Tab (Exclude CC/QC/AQSTD/BLK)
-                if 'UNKNOWN' in s_type and 'AQSTD' not in s_name and 'BLK' not in s_name and 'BLANK' not in s_name and '+IS' not in s_name:
-                    global_samples[s_name] = conc
 
             file_cc_dict['Slope'] = "" if pd.isna(slope) else slope
             file_cc_dict['Intercept'] = "" if pd.isna(intercept) else intercept
@@ -262,9 +283,19 @@ if st.button("Generate Dashboard"):
             safe_sheet_name = re.sub(r'[\\/*?:\[\]]', '_', file.name)[:31]
             excel_tabs[safe_sheet_name] = clean_df
             
-            summary_log.append({"File Name": file.name, "Status": "SUCCESS", "Error Details": "Processed"})
+            nom_check_msg = "All CC and QC concentration matching nominal value." if len(nominals) > 0 else "No nominals defined."
+            dup_ccqc_msg = "All CC and QC IDs are unique." if not file_dupes else f"Duplicates found"
+            dup_samp_msg = "All CC and QC sample names are unique." if not file_sample_dupes else f"Duplicates found"
 
-        # --- 3. CONSTRUCT VBA-STYLE SUMMARY DATAFRAMES ---
+            summary_log.append({
+                "File Name": file.name, 
+                "Status": "SUCCESS", 
+                "Error Details": "Dashboard generated.",
+                "Nominal Conc. Check": nom_check_msg,
+                "Duplicate CC & QC ID Check": dup_ccqc_msg,
+                "Duplicate Sample Name Check": dup_samp_msg
+            })
+
         excel_tabs["Summary"] = pd.DataFrame(summary_log)
         
         if cc_file_data:
@@ -308,7 +339,6 @@ if st.button("Generate Dashboard"):
             qc_df = pd.concat([pd.DataFrame([row_nom_qc, row_low_qc, row_up_qc]), qc_df_data], ignore_index=True)
             excel_tabs["QC"] = qc_df[qc_columns]
 
-        # --- 4. EXPORT TO EXCEL WITH VBA TIMES NEW ROMAN FORMATTING ---
         output = io.BytesIO()
         with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
             
@@ -322,7 +352,6 @@ if st.button("Generate Dashboard"):
             
             workbook = writer.book
             
-            # --- DEFINE TIMES NEW ROMAN FORMATTING STYLES ---
             tnr = {'font_name': 'Times New Roman', 'font_size': 10}
             
             header_format = workbook.add_format({**tnr, 'bold': True, 'bg_color': '#C6E0B4', 'border': 1, 'align': 'center', 'valign': 'vcenter'})
@@ -338,20 +367,24 @@ if st.button("Generate Dashboard"):
             pct_fmt = workbook.add_format({**tnr, 'num_format': '0.00', 'align': 'center', 'valign': 'vcenter'})
             merge_fmt = workbook.add_format({**tnr, 'align': 'center', 'valign': 'vcenter'})
             
-            no_border_fmt = workbook.add_format({**tnr, 'align': 'left', 'valign': 'vcenter', 'bold': True})
+            success_fmt = workbook.add_format({**tnr, 'bg_color': '#99FF99', 'align': 'center', 'valign': 'vcenter'})
+            failed_fmt = workbook.add_format({**tnr, 'bg_color': '#FF9999', 'align': 'center', 'valign': 'vcenter'})
             
-            # --- APPLY COLUMN FORMATTING AND CHARTS ---
             for sheet_name, df_tab in excel_tabs.items():
                 worksheet = writer.sheets[sheet_name]
                 
                 for col_num, value in enumerate(df_tab.columns):
                     worksheet.write(0, col_num, value, header_format)
                     
-                worksheet.set_column('A:A', 25) 
+                worksheet.set_column('A:A', 35) 
                 
                 if sheet_name == "Summary":
-                    worksheet.set_column('B:Z', 15, general_fmt)
-                    
+                    worksheet.set_column('B:Z', 25, general_fmt)
+                    for row_num, row_data in enumerate(df_tab.values):
+                        row_fmt = success_fmt if row_data[1] == "SUCCESS" else failed_fmt
+                        for col_num, value in enumerate(row_data):
+                            worksheet.write(row_num + 1, col_num, value, row_fmt)
+                            
                 elif sheet_name == "CC":
                     worksheet.set_column(1, 2, 15, general_fmt)
                     start_c = 3
@@ -377,21 +410,21 @@ if st.button("Generate Dashboard"):
                             'name': 'Samples',
                             'categories': [sheet_name, 1, 5, max_row, 5],
                             'values':     [sheet_name, 1, 8, max_row, 8],
-                            'marker': {'type': 'circle', 'size': 6, 'fill': {'color': '#5B9BD5'}, 'border': {'color': '#5B9BD5'}},
+                            'marker': {'type': 'circle', 'size': 5, 'fill': {'color': '#4F81BD'}, 'border': {'none': True}},
                             'line':   {'none': True}
                         })
                         chart.add_series({
                             'name': 'Blank',
                             'categories': [sheet_name, 1, 5, max_row, 5],
                             'values':     [sheet_name, 1, 7, max_row, 7],
-                            'marker': {'type': 'circle', 'size': 6, 'fill': {'color': '#ED7D31'}, 'border': {'color': '#ED7D31'}},
+                            'marker': {'type': 'circle', 'size': 5, 'fill': {'color': '#F79646'}, 'border': {'none': True}},
                             'line':   {'none': True}
                         })
                         chart.add_series({
                             'name': 'CCQC',
                             'categories': [sheet_name, 1, 5, max_row, 5],
                             'values':     [sheet_name, 1, 6, max_row, 6],
-                            'marker': {'type': 'circle', 'size': 6, 'fill': {'color': '#FF0000'}, 'border': {'color': '#A6A6A6'}},
+                            'marker': {'type': 'circle', 'size': 5, 'fill': {'color': '#C0504D'}, 'border': {'none': True}},
                             'line':   {'none': True}
                         })
                         
@@ -404,7 +437,6 @@ if st.button("Generate Dashboard"):
                         chart.show_hidden_data()
                         worksheet.insert_chart('K2', chart)
 
-            # --- INJECT STATS & MERGE FORMATTING FOR CC AND QC ---
             for target_sheet in ["CC", "QC"]:
                 if target_sheet in excel_tabs:
                     ws = writer.sheets[target_sheet]
@@ -458,7 +490,6 @@ if st.button("Generate Dashboard"):
                             'format': yellow_flag
                         })
 
-            # --- BUILD CONCENTRATION DATA TAB MATCHING VBA ---
             ws_conc = workbook.add_worksheet("Concentration Data")
             ws_conc.set_column('A:E', 20, general_fmt)
             
@@ -502,7 +533,7 @@ if st.button("Generate Dashboard"):
                 ws_conc.write(row_idx, 4, s_name, general_fmt)
                 row_idx += 1
 
-        st.success("Dashboard successfully generated with Concentration Data & Times New Roman Formatting!")
+        st.success("Dashboard successfully generated with legacy Plot & Summary formatting!")
         st.download_button(
             label="Download Master Excel Dashboard",
             data=output.getvalue(),
