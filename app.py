@@ -160,7 +160,6 @@ if st.button("Generate Dashboard"):
             file_dupes, file_sample_dupes = [], []
             seen_ccqc, seen_samples = set(), set()
             
-            # Carryover and QC Trackers
             std_a_area, std_zero_is_area = None, None
             cc_pass, lqc_pass, mmqc_pass, mqc_pass, hqc_pass = 0, 0, 0, 0, 0
             out_of_range_is, above_uloq = [], []
@@ -180,15 +179,12 @@ if st.button("Generate Dashboard"):
                 a_area = pd.to_numeric(row[analyte_area_col], errors='coerce') if analyte_area_col else np.nan
                 acc_val = pd.to_numeric(row[acc_col], errors='coerce') if acc_col else np.nan
                 
-                # Extract Base Reference Areas for Carryover
                 if ('STD-A' in s_name or '-1' in s_name) and std_a_area is None: std_a_area = a_area
                 if ('ZERO' in s_name or 'AQSTD' in s_name or '+IS' in s_name) and std_zero_is_area is None: std_zero_is_area = s_is_area
                 
-                # Extract Blanks for Carryover Table
                 if 'BLANK' in s_type or 'BLK' in s_name or 'MOBILE' in s_name:
                     carryover_samples.append({'name': s_name, 'a_area': a_area, 'is_area': s_is_area})
                 
-                # Pass/Fail Trackers
                 if pd.notna(acc_val):
                     if 'STANDARD' in s_type or 'STD' in s_name:
                         if ('-A' in s_name or '-1' in s_name) and 80 <= acc_val <= 120: cc_pass += 1
@@ -198,7 +194,6 @@ if st.button("Generate Dashboard"):
                     if 'MQC' in s_name and 'MMQC' not in s_name and 85 <= acc_val <= 115: mqc_pass += 1
                     if 'HQC' in s_name and 85 <= acc_val <= 115: hqc_pass += 1
                 
-                # Out of Range IS & Above ULOQ Trackers
                 if pd.notna(s_is_area) and ('STANDARD' in s_type or 'QC' in s_type or 'UNKNOWN' in s_type):
                     if s_is_area < lower_is_limit or s_is_area > upper_is_limit:
                         if 'BLK' not in s_name and 'AQSTD' not in s_name:
@@ -206,7 +201,6 @@ if st.button("Generate Dashboard"):
                 if 'UNKNOWN' in s_type and pd.notna(conc) and conc > uloq:
                     above_uloq.append({'name': s_name, 'conc': conc})
 
-                # IS Plot Tracking
                 inj_order_list.append(current_inj)
                 if pd.notna(s_is_area) and pd.notna(avg_is_area) and avg_is_area > 0:
                     pct_diff = (s_is_area / avg_is_area) * 100 - 100
@@ -264,7 +258,6 @@ if st.button("Generate Dashboard"):
             safe_sheet_name = re.sub(r'[\\/*?:\[\]]', '_', file.name)[:31]
             excel_tabs[safe_sheet_name] = clean_df
             
-            # Store batch metadata for plotting the right-side dashboard
             batch_meta_data[safe_sheet_name] = {
                 'slope': slope, 'intercept': intercept, 'r_val': r_val,
                 'cc_pass': cc_pass, 'lqc_pass': lqc_pass, 'mmqc_pass': mmqc_pass, 'mqc_pass': mqc_pass, 'hqc_pass': hqc_pass,
@@ -330,7 +323,6 @@ if st.button("Generate Dashboard"):
             
             workbook = writer.book
             
-            # --- DEFINE FORMATTING STYLES ---
             tnr = {'font_name': 'Times New Roman', 'font_size': 10}
             header_format = workbook.add_format({**tnr, 'bold': True, 'bg_color': '#C6E0B4', 'border': 1, 'align': 'center', 'valign': 'vcenter'})
             yellow_flag = workbook.add_format({**tnr, 'bg_color': '#FFFF00', 'bold': True, 'font_color': '#FF0000'})
@@ -345,7 +337,6 @@ if st.button("Generate Dashboard"):
             success_fmt = workbook.add_format({**tnr, 'bg_color': '#99FF99', 'align': 'center', 'valign': 'vcenter'})
             failed_fmt = workbook.add_format({**tnr, 'bg_color': '#FF9999', 'align': 'center', 'valign': 'vcenter'})
             
-            # Right-side Table Formatting
             table_header = workbook.add_format({**tnr, 'bold': True, 'bg_color': '#D9E1F2', 'border': 1, 'align': 'center'})
             table_data = workbook.add_format({**tnr, 'border': 1, 'align': 'center'})
             table_data_float = workbook.add_format({**tnr, 'border': 1, 'align': 'center', 'num_format': '0.000'})
@@ -376,26 +367,26 @@ if st.button("Generate Dashboard"):
                     worksheet.set_column(4, 7, 15, conc_fmt)
                     
                 else:
-                    # --- INDIVIDUAL BATCH TABS - FULL LAYOUT ---
                     worksheet.set_column('B:E', 15, general_fmt)
                     
-                    # Move hidden calculation columns out of the way to AA:AD (Indexes 26 to 29)
-                    # We copy the data from the DataFrame columns (5 to 8) into the new hidden columns.
+                    # Safely copy calculation columns while replacing NaNs with empty strings
                     for r_idx in range(len(df_tab)):
-                        worksheet.write(r_idx + 1, 26, df_tab.iloc[r_idx, 5])
-                        worksheet.write(r_idx + 1, 27, df_tab.iloc[r_idx, 6])
-                        worksheet.write(r_idx + 1, 28, df_tab.iloc[r_idx, 7])
-                        worksheet.write(r_idx + 1, 29, df_tab.iloc[r_idx, 8])
+                        v5 = df_tab.iloc[r_idx, 5]
+                        v6 = df_tab.iloc[r_idx, 6]
+                        v7 = df_tab.iloc[r_idx, 7]
+                        v8 = df_tab.iloc[r_idx, 8]
                         
-                    # Hide original and new calculation columns
+                        worksheet.write(r_idx + 1, 26, "" if pd.isna(v5) else v5)
+                        worksheet.write(r_idx + 1, 27, "" if pd.isna(v6) else v6)
+                        worksheet.write(r_idx + 1, 28, "" if pd.isna(v7) else v7)
+                        worksheet.write(r_idx + 1, 29, "" if pd.isna(v8) else v8)
+                        
                     worksheet.set_column(5, 8, None, None, {'hidden': True})
                     worksheet.set_column(26, 29, None, None, {'hidden': True})
                     
-                    # Dashboard Layout Columns (G through K)
                     worksheet.set_column('G:K', 15, general_fmt)
                     meta = batch_meta_data.get(sheet_name, {})
                     
-                    # 1. Slope/Intercept/r Table
                     worksheet.write('G2', 'Intercept', table_data)
                     worksheet.write('H2', meta.get('intercept', ''), table_data_float)
                     worksheet.write('G3', 'Slope', table_data)
@@ -403,7 +394,6 @@ if st.button("Generate Dashboard"):
                     worksheet.write('G4', 'r', table_data)
                     worksheet.write('H4', meta.get('r_val', ''), table_data_r)
                     
-                    # 2. CC/QC Passed Table
                     worksheet.write('G6', 'No of CC passed', table_header)
                     worksheet.write('H6', meta.get('cc_pass', ''), table_data)
                     worksheet.write('G7', 'LQC', table_header)
@@ -415,7 +405,6 @@ if st.button("Generate Dashboard"):
                     worksheet.write('G10', 'HQC', table_header)
                     worksheet.write('H10', meta.get('hqc_pass', ''), table_data)
                     
-                    # 3. Carryover Table
                     co_headers = ['Sample name', 'Analyte Area', 'IS area', '% analyte', '% IS']
                     for c_idx, h in enumerate(co_headers):
                         worksheet.write(12, 6 + c_idx, h, header_format)
@@ -437,7 +426,6 @@ if st.button("Generate Dashboard"):
                     
                     max_row = len(df_tab)
                     if max_row > 0:
-                        # 4. IS Variation Plot
                         chart1 = workbook.add_chart({'type': 'scatter'})
                         chart1.add_series({
                             'name': 'Samples',
@@ -469,12 +457,11 @@ if st.button("Generate Dashboard"):
                         chart1.show_hidden_data()
                         worksheet.insert_chart('G18', chart1)
                         
-                        # 5. Concentration Line Chart
                         chart2 = workbook.add_chart({'type': 'scatter', 'subtype': 'straight_with_markers'})
                         chart2.add_series({
                             'name': 'Concentration',
                             'categories': [sheet_name, 1, 26, max_row, 26],
-                            'values':     [sheet_name, 1, 3, max_row, 3], # Calc. Conc column
+                            'values':     [sheet_name, 1, 3, max_row, 3],
                             'marker': {'type': 'diamond', 'size': 5, 'fill': {'color': '#4F81BD'}, 'border': {'color': '#4F81BD'}},
                             'line':   {'color': '#4F81BD', 'width': 1.5}
                         })
@@ -486,7 +473,6 @@ if st.button("Generate Dashboard"):
                         chart2.show_hidden_data()
                         worksheet.insert_chart('G30', chart2)
                         
-                        # 6. Out of Range Tables
                         or_start = 45
                         worksheet.write(or_start, 6, "Out of Range %IS Sample", header_format)
                         worksheet.write(or_start, 7, "Concentration", header_format)
@@ -503,7 +489,6 @@ if st.button("Generate Dashboard"):
                             worksheet.write(or_start + 1 + i, 8, smp['name'], table_data)
                             worksheet.write(or_start + 1 + i, 9, smp['conc'], table_data_float)
 
-            # Standard CC/QC Stats Formats
             for target_sheet in ["CC", "QC"]:
                 if target_sheet in excel_tabs:
                     ws = writer.sheets[target_sheet]
@@ -545,7 +530,6 @@ if st.button("Generate Dashboard"):
                         ws.write_formula(stat_row + 3, col_num, f"=IFERROR(({col_letter}{stat_row + 1}/{col_letter}2)*100, \"\")", pct_fmt)
                         ws.conditional_format(data_range, {'type': 'formula', 'criteria': f"=AND(ISNUMBER({col_letter}5), OR({col_letter}5<{col_letter}$3, {col_letter}5>{col_letter}$4))", 'format': yellow_flag})
 
-            # Concentration Data Tab
             ws_conc = workbook.add_worksheet("Concentration Data")
             ws_conc.set_column('A:E', 20, general_fmt)
             ws_conc.merge_range('A1:B1', "Molecule Name", header_format)
@@ -576,7 +560,7 @@ if st.button("Generate Dashboard"):
                 ws_conc.write(row_idx, 4, s_name, general_fmt)
                 row_idx += 1
 
-        st.success("Dashboard successfully generated with full right-side tracking layout!")
+        st.success("Dashboard successfully generated!")
         st.download_button(
             label="Download Master Excel Dashboard",
             data=output.getvalue(),
