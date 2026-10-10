@@ -8,7 +8,7 @@ st.header("1. Upload Files")
 
 col1, col2, col3 = st.columns(3)
 with col1:
-    csv_file = st.file_uploader("Upload TSQ CSV", type=["csv"])
+    csv_file = st.file_uploader("Upload TSQ Export", type=["csv", "xls", "xlsx"])
 with col2:
     pdf_file = st.file_uploader("Upload Protocol PDF", type=["pdf"])
 with col3:
@@ -24,7 +24,12 @@ if st.button("Run QC and Generate Report"):
         st.success("Files received! Processing data...")
         
         # 1. Read the CSV into memory
-        df = pd.read_csv(csv_file)
+        # Check the file extension to decide how to read it
+if csv_file.name.endswith('.csv'):
+    df = pd.read_csv(csv_file)
+else:
+    # Use read_excel for .xls and .xlsx files
+    df = pd.read_excel(csv_file)
         
         # 2. Clean the data: Drop any completely empty rows
         df = df.dropna(how='all')
