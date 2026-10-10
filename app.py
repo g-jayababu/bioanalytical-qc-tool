@@ -147,7 +147,6 @@ if st.button("Generate Dashboard"):
                 summary_log.append({"File Name": file.name, "Status": "FAILED", "Error Details": "Missing critical data columns."})
                 continue
             
-            # Subj ID extraction
             subj_id = "S1"
             match = re.search(r'(S\d+(?:[-_]S\d+)*)', file.name, re.IGNORECASE)
             if match:
@@ -178,7 +177,7 @@ if st.button("Generate Dashboard"):
             samp_is_list = []
             current_inj = 1
             
-            # Calculate Mean IS Area for CCs and QCs to establish baseline
+            # Calculate Baseline Mean IS Area (CCs and QCs only)
             cc_qc_df = df[df[type_col].str.contains('Standard|QC|Quality', case=False, na=False)].copy()
             cc_qc_df[is_area_col] = pd.to_numeric(cc_qc_df[is_area_col], errors='coerce')
             avg_is_area = cc_qc_df[is_area_col].mean()
@@ -190,7 +189,7 @@ if st.button("Generate Dashboard"):
                 s_is_area = pd.to_numeric(row[is_area_col], errors='coerce')
                 if pd.isna(conc): conc = ""
                 
-                # IS Plot Calculation Engine
+                # Plot Engine: Route % Differences into categorical columns for xlsxwriter
                 inj_order_list.append(current_inj)
                 if pd.notna(s_is_area) and pd.notna(avg_is_area) and avg_is_area > 0:
                     pct_diff = (s_is_area / avg_is_area) * 100 - 100
@@ -205,13 +204,11 @@ if st.button("Generate Dashboard"):
                 
                 current_inj += 1
                 
-                # Map Standards
                 for std in std_names:
                     if std in s_name or std.replace("-", "") in s_name:
                         file_cc_dict[std] = conc
                         break
                 
-                # Map QCs
                 if 'LQC' in s_name:
                     lqc_list.append(conc); lqc_ids.append(s_name)
                 elif 'MMQC' in s_name:
@@ -349,7 +346,7 @@ if st.button("Generate Dashboard"):
                     worksheet.set_column(4, 7, 15, conc_fmt)
                     
                 else:
-                    # INDIVIDUAL BATCH TABS - Format and Insert Charts
+                    # INDIVIDUAL BATCH TABS - Format Data
                     worksheet.set_column('B:E', 15, general_fmt)
                     
                     # Hide the calculation columns (F through I / Index 5 to 8)
@@ -358,44 +355,45 @@ if st.button("Generate Dashboard"):
                     df_target = excel_tabs[sheet_name]
                     max_row = len(df_target)
                     
-                    # Create the IS Scatter Chart
-                    chart = workbook.add_chart({'type': 'scatter'})
-                    
-                    # Add Sample Series (Col I / Index 8)
-                    chart.add_series({
-                        'name': 'Samples',
-                        'categories': [sheet_name, 1, 5, max_row, 5],
-                        'values':     [sheet_name, 1, 8, max_row, 8],
-                        'marker': {'type': 'circle', 'fill': {'color': '#5B9BD5'}, 'border': {'color': '#5B9BD5'}},
-                    })
-                    
-                    # Add Blank Series (Col H / Index 7)
-                    chart.add_series({
-                        'name': 'Blank',
-                        'categories': [sheet_name, 1, 5, max_row, 5],
-                        'values':     [sheet_name, 1, 7, max_row, 7],
-                        'marker': {'type': 'circle', 'fill': {'color': '#ED7D31'}, 'border': {'color': '#ED7D31'}},
-                    })
-                    
-                    # Add CCQC Series (Col G / Index 6)
-                    chart.add_series({
-                        'name': 'CCQC',
-                        'categories': [sheet_name, 1, 5, max_row, 5],
-                        'values':     [sheet_name, 1, 6, max_row, 6],
-                        'marker': {'type': 'circle', 'fill': {'color': '#FF0000'}, 'border': {'color': '#A6A6A6'}},
-                    })
-                    
-                    # Configure exact chart appearance matching VBA
-                    chart.set_title({'name': 'IS Variation Plot', 'name_font': {'size': 12}})
-                    chart.set_x_axis({'name': 'Injection Order', 'major_gridlines': {'visible': False}})
-                    chart.set_y_axis({'name': '% Difference from Mean IS', 'major_gridlines': {'visible': True}, 'num_format': '0.00'})
-                    chart.set_legend({'position': 'right'})
-                    
-                    # Set size to exactly 425x227 pixels (approx 15cm x 8cm)
-                    chart.set_size({'width': 425, 'height': 227})
-                    
-                    # Insert chart into column K (Index 10) away from hidden columns
-                    worksheet.insert_chart('K2', chart)
+                    if max_row > 0:
+                        # Draw IS Scatter Chart
+                        chart = workbook.add_chart({'type': 'scatter'})
+                        
+                        # Add Sample Series (Col I / Index 8)
+                        chart.add_series({
+                            'name': 'Samples',
+                            'categories': [sheet_name, 1, 5, max_row, 5],
+                            'values':     [sheet_name, 1, 8, max_row, 8],
+                            'marker': {'type': 'circle', 'fill': {'color': '#5B9BD5'}, 'border': {'color': '#5B9BD5'}},
+                        })
+                        
+                        # Add Blank Series (Col H / Index 7)
+                        chart.add_series({
+                            'name': 'Blank',
+                            'categories': [sheet_name, 1, 5, max_row, 5],
+                            'values':     [sheet_name, 1, 7, max_row, 7],
+                            'marker': {'type': 'circle', 'fill': {'color': '#ED7D31'}, 'border': {'color': '#ED7D31'}},
+                        })
+                        
+                        # Add CCQC Series (Col G / Index 6)
+                        chart.add_series({
+                            'name': 'CCQC',
+                            'categories': [sheet_name, 1, 5, max_row, 5],
+                            'values':     [sheet_name, 1, 6, max_row, 6],
+                            'marker': {'type': 'circle', 'fill': {'color': '#FF0000'}, 'border': {'color': '#A6A6A6'}},
+                        })
+                        
+                        # Configure exact chart appearance
+                        chart.set_title({'name': 'IS Variation Plot', 'name_font': {'size': 12, 'name': 'Arial'}})
+                        chart.set_x_axis({'name': 'Injection Order', 'major_gridlines': {'visible': False}})
+                        chart.set_y_axis({'name': '% Difference from Mean IS', 'major_gridlines': {'visible': True}, 'num_format': '0.00'})
+                        chart.set_legend({'position': 'right'})
+                        
+                        # Set size to exactly 425x227 pixels (approx 15cm x 8cm)
+                        chart.set_size({'width': 425, 'height': 227})
+                        
+                        # Insert chart into column K (Index 10)
+                        worksheet.insert_chart('K2', chart)
 
             # --- INJECT STATS & MERGE FORMATTING ---
             for target_sheet in ["CC", "QC"]:
