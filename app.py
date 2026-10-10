@@ -155,8 +155,6 @@ if st.button("Generate Dashboard"):
             lqc_list, mmqc_list, mqc_list, hqc_list = [], [], [], []
             lqc_ids, mmqc_ids, mqc_ids, hqc_ids = [], [], [], []
             
-            inj_order_list, ccqc_is_list, blank_is_list, samp_is_list = [], [], [], []
-            current_inj = 1
             file_dupes, file_sample_dupes = [], []
             seen_ccqc, seen_samples = set(), set()
             
@@ -171,6 +169,17 @@ if st.button("Generate Dashboard"):
             lower_is_limit = avg_is_area * 0.4 if pd.notna(avg_is_area) else 0
             upper_is_limit = avg_is_area * 1.6 if pd.notna(avg_is_area) else float('inf')
             
+            # --- VBA LAYOUT LISTS ---
+            ccqc_rows = []
+            sample_rows = []
+            ccqc_chart = []
+            sample_chart = []
+            current_inj = 1
+            
+            # Header Row for CC/QC
+            ccqc_rows.append({"Sample Name": "CC and QC", "Area": "", "IS area": "", "Calc.Conc.": "", "% Accuracy": ""})
+            ccqc_chart.append((np.nan, np.nan, np.nan, np.nan))
+            
             for index, row in df.iterrows():
                 s_name = str(row[name_col]).strip().upper()
                 s_type = str(row[type_col]).strip().upper()
@@ -181,9 +190,7 @@ if st.button("Generate Dashboard"):
                 
                 if ('STD-A' in s_name or '-1' in s_name) and std_a_area is None: std_a_area = a_area
                 if ('ZERO' in s_name or 'AQSTD' in s_name or '+IS' in s_name) and std_zero_is_area is None: std_zero_is_area = s_is_area
-                
-                if 'BLANK' in s_type or 'BLK' in s_name or 'MOBILE' in s_name:
-                    carryover_samples.append({'name': s_name, 'a_area': a_area, 'is_area': s_is_area})
+                if 'BLANK' in s_type or 'BLK' in s_name or 'MOBILE' in s_name: carryover_samples.append({'name': s_name, 'a_area': a_area, 'is_area': s_is_area})
                 
                 if pd.notna(acc_val):
                     if 'STANDARD' in s_type or 'STD' in s_name:
@@ -201,28 +208,31 @@ if st.button("Generate Dashboard"):
                 if 'UNKNOWN' in s_type and pd.notna(conc) and conc > uloq:
                     above_uloq.append({'name': s_name, 'conc': conc})
 
-                inj_order_list.append(current_inj)
+                # Row formatting
+                row_dict = {"Sample Name": s_name, "Area": a_area, "IS area": s_is_area, "Calc.Conc.": conc, "% Accuracy": acc_val}
+                chart_tuple = [current_inj, np.nan, np.nan, np.nan]
+                
                 if pd.notna(s_is_area) and pd.notna(avg_is_area) and avg_is_area > 0:
                     pct_diff = (s_is_area / avg_is_area) * 100 - 100
-                    if 'STANDARD' in s_type or 'QC' in s_type or 'QUALITY' in s_type:
-                        ccqc_is_list.append(pct_diff); blank_is_list.append(np.nan); samp_is_list.append(np.nan)
-                    elif 'BLANK' in s_type or '-BLK' in s_name or '+IS' in s_name:
-                        ccqc_is_list.append(np.nan); blank_is_list.append(pct_diff); samp_is_list.append(np.nan)
-                    else:
-                        ccqc_is_list.append(np.nan); blank_is_list.append(np.nan); samp_is_list.append(pct_diff)
-                else:
-                    ccqc_is_list.append(np.nan); blank_is_list.append(np.nan); samp_is_list.append(np.nan)
-                
-                current_inj += 1
-                
+                    if 'STANDARD' in s_type or 'QC' in s_type or 'QUALITY' in s_type: chart_tuple[1] = pct_diff
+                    elif 'BLANK' in s_type or '-BLK' in s_name or '+IS' in s_name: chart_tuple[2] = pct_diff
+                    else: chart_tuple[3] = pct_diff
+
                 if 'STANDARD' in s_type or 'QC' in s_type or 'QUALITY' in s_type:
+                    ccqc_rows.append(row_dict)
+                    ccqc_chart.append(tuple(chart_tuple))
                     if s_name in seen_ccqc: file_dupes.append(s_name)
                     else: seen_ccqc.add(s_name)
-                elif 'UNKNOWN' in s_type and 'AQSTD' not in s_name and 'BLK' not in s_name and '+IS' not in s_name:
-                    if s_name in seen_samples: file_sample_dupes.append(s_name)
-                    else:
-                        seen_samples.add(s_name)
-                        global_samples[s_name] = conc
+                else:
+                    sample_rows.append(row_dict)
+                    sample_chart.append(tuple(chart_tuple))
+                    if 'UNKNOWN' in s_type and 'AQSTD' not in s_name and 'BLK' not in s_name and '+IS' not in s_name:
+                        if s_name in seen_samples: file_sample_dupes.append(s_name)
+                        else:
+                            seen_samples.add(s_name)
+                            global_samples[s_name] = conc
+                            
+                current_inj += 1
                 
                 for std in std_names:
                     if std in s_name or std.replace("-", "") in s_name:
@@ -248,17 +258,17 @@ if st.button("Generate Dashboard"):
                 }
                 qc_file_data.append(q_dict)
                 
-            clean_df = df[[name_col, type_col, is_area_col, conc_col, acc_col]].copy()
-            clean_df.columns = ["Sample Name", "Sample Type", "IS Area", "Calc. Conc.", "% Accuracy"]
-            clean_df["Inj Order"] = inj_order_list
-            clean_df["CCQC IS%"] = ccqc_is_list
-            clean_df["Blank IS%"] = blank_is_list
-            clean_df["Sample IS%"] = samp_is_list
-            
             safe_sheet_name = re.sub(r'[\\/*?:\[\]]', '_', file.name)[:31]
-            excel_tabs[safe_sheet_name] = clean_df
+            
+            # Construct Final VBA List Arrays
+            avg_row = {"Sample Name": "Average IS area of CC and QC", "Area": "", "IS area": avg_is_area, "Calc.Conc.": "", "% Accuracy": ""}
+            header_row = {"Sample Name": "Sample Name", "Area": "Area", "IS area": "IS area", "Calc.Conc.": "Calc.Conc.", "% Accuracy": "% Acc"}
+            
+            final_rows = ccqc_rows + [avg_row, header_row] + sample_rows
+            final_chart = ccqc_chart + [(np.nan, np.nan, np.nan, np.nan), (np.nan, np.nan, np.nan, np.nan)] + sample_chart
             
             batch_meta_data[safe_sheet_name] = {
+                'rows': final_rows, 'chart_data': final_chart,
                 'slope': slope, 'intercept': intercept, 'r_val': r_val,
                 'cc_pass': cc_pass, 'lqc_pass': lqc_pass, 'mmqc_pass': mmqc_pass, 'mqc_pass': mqc_pass, 'hqc_pass': hqc_pass,
                 'std_a_area': std_a_area, 'std_zero_is_area': std_zero_is_area,
@@ -317,13 +327,14 @@ if st.button("Generate Dashboard"):
             excel_tabs["Summary"].to_excel(writer, sheet_name="Summary", index=False)
             if "CC" in excel_tabs: excel_tabs["CC"].to_excel(writer, sheet_name="CC", index=False)
             if "QC" in excel_tabs: excel_tabs["QC"].to_excel(writer, sheet_name="QC", index=False)
-            for sheet_name, df_tab in excel_tabs.items():
-                if sheet_name not in ["Summary", "CC", "QC"]:
-                    df_tab.to_excel(writer, sheet_name=sheet_name, index=False)
             
             workbook = writer.book
             
+            # --- DEFINE FORMATTING STYLES ---
             tnr = {'font_name': 'Times New Roman', 'font_size': 10}
+            
+            # Global
+            green_sheet_bg = workbook.add_format({**tnr, 'bg_color': '#CDE4CE'})
             header_format = workbook.add_format({**tnr, 'bold': True, 'bg_color': '#C6E0B4', 'border': 1, 'align': 'center', 'valign': 'vcenter'})
             yellow_flag = workbook.add_format({**tnr, 'bg_color': '#FFFF00', 'bold': True, 'font_color': '#FF0000'})
             bold_label = workbook.add_format({**tnr, 'bold': True, 'align': 'right'})
@@ -337,158 +348,167 @@ if st.button("Generate Dashboard"):
             success_fmt = workbook.add_format({**tnr, 'bg_color': '#99FF99', 'align': 'center', 'valign': 'vcenter'})
             failed_fmt = workbook.add_format({**tnr, 'bg_color': '#FF9999', 'align': 'center', 'valign': 'vcenter'})
             
-            table_header = workbook.add_format({**tnr, 'bold': True, 'bg_color': '#D9E1F2', 'border': 1, 'align': 'center'})
-            table_data = workbook.add_format({**tnr, 'border': 1, 'align': 'center'})
-            table_data_float = workbook.add_format({**tnr, 'border': 1, 'align': 'center', 'num_format': '0.000'})
-            table_data_pct = workbook.add_format({**tnr, 'border': 1, 'align': 'center', 'num_format': '0.00'})
-            table_data_r = workbook.add_format({**tnr, 'border': 1, 'align': 'center', 'num_format': '0.0000'})
-            
-            for sheet_name, df_tab in excel_tabs.items():
-                worksheet = writer.sheets[sheet_name]
-                for col_num, value in enumerate(df_tab.columns): worksheet.write(0, col_num, value, header_format)
-                worksheet.set_column('A:A', 35) 
-                
-                if sheet_name == "Summary":
-                    worksheet.set_column('B:Z', 25, general_fmt)
-                    for row_num, row_data in enumerate(df_tab.values):
-                        row_fmt = success_fmt if row_data[1] == "SUCCESS" else failed_fmt
-                        for col_num, value in enumerate(row_data): worksheet.write(row_num + 1, col_num, value, row_fmt)
-                            
-                elif sheet_name == "CC":
-                    worksheet.set_column(1, 2, 15, general_fmt)
-                    start_c = 3
-                    end_c = 3 + len(std_names) - 1
-                    if end_c >= start_c: worksheet.set_column(start_c, end_c, 15, conc_fmt)
-                    worksheet.set_column(end_c + 1, end_c + 2, 15, general_fmt)
-                    worksheet.set_column(end_c + 3, end_c + 3, 15, r_fmt)
-                    
-                elif sheet_name == "QC":
-                    worksheet.set_column(1, 3, 15, general_fmt)
-                    worksheet.set_column(4, 7, 15, conc_fmt)
-                    
-                else:
-                    worksheet.set_column('B:E', 15, general_fmt)
-                    
-                    # Safely copy calculation columns while replacing NaNs with empty strings
-                    for r_idx in range(len(df_tab)):
-                        v5 = df_tab.iloc[r_idx, 5]
-                        v6 = df_tab.iloc[r_idx, 6]
-                        v7 = df_tab.iloc[r_idx, 7]
-                        v8 = df_tab.iloc[r_idx, 8]
-                        
-                        worksheet.write(r_idx + 1, 26, "" if pd.isna(v5) else v5)
-                        worksheet.write(r_idx + 1, 27, "" if pd.isna(v6) else v6)
-                        worksheet.write(r_idx + 1, 28, "" if pd.isna(v7) else v7)
-                        worksheet.write(r_idx + 1, 29, "" if pd.isna(v8) else v8)
-                        
-                    worksheet.set_column(5, 8, None, None, {'hidden': True})
-                    worksheet.set_column(26, 29, None, None, {'hidden': True})
-                    
-                    worksheet.set_column('G:K', 15, general_fmt)
-                    meta = batch_meta_data.get(sheet_name, {})
-                    
-                    worksheet.write('G2', 'Intercept', table_data)
-                    worksheet.write('H2', meta.get('intercept', ''), table_data_float)
-                    worksheet.write('G3', 'Slope', table_data)
-                    worksheet.write('H3', meta.get('slope', ''), table_data_float)
-                    worksheet.write('G4', 'r', table_data)
-                    worksheet.write('H4', meta.get('r_val', ''), table_data_r)
-                    
-                    worksheet.write('G6', 'No of CC passed', table_header)
-                    worksheet.write('H6', meta.get('cc_pass', ''), table_data)
-                    worksheet.write('G7', 'LQC', table_header)
-                    worksheet.write('H7', meta.get('lqc_pass', ''), table_data)
-                    worksheet.write('G8', 'MMQC', table_header)
-                    worksheet.write('H8', meta.get('mmqc_pass', ''), table_data)
-                    worksheet.write('G9', 'MQC', table_header)
-                    worksheet.write('H9', meta.get('mqc_pass', ''), table_data)
-                    worksheet.write('G10', 'HQC', table_header)
-                    worksheet.write('H10', meta.get('hqc_pass', ''), table_data)
-                    
-                    co_headers = ['Sample name', 'Analyte Area', 'IS area', '% analyte', '% IS']
-                    for c_idx, h in enumerate(co_headers):
-                        worksheet.write(12, 6 + c_idx, h, header_format)
-                        
-                    co_samples = meta.get('carryover', [])
-                    for r_idx, smp in enumerate(co_samples):
-                        r = 13 + r_idx
-                        a_area = smp['a_area']
-                        is_area = smp['is_area']
-                        
-                        pct_a = (a_area / meta['std_a_area']) * 100 if meta.get('std_a_area') and pd.notna(a_area) and meta['std_a_area'] > 0 else np.nan
-                        pct_is = (is_area / meta['std_zero_is_area']) * 100 if meta.get('std_zero_is_area') and pd.notna(is_area) and meta['std_zero_is_area'] > 0 else np.nan
-                        
-                        worksheet.write(r, 6, smp['name'], table_data)
-                        worksheet.write(r, 7, a_area if pd.notna(a_area) else "NA", table_data)
-                        worksheet.write(r, 8, is_area if pd.notna(is_area) else "NA", table_data)
-                        worksheet.write(r, 9, pct_a if pd.notna(pct_a) else "NA", table_data_pct)
-                        worksheet.write(r, 10, pct_is if pd.notna(pct_is) else "NA", table_data_pct)
-                    
-                    max_row = len(df_tab)
-                    if max_row > 0:
-                        chart1 = workbook.add_chart({'type': 'scatter'})
-                        chart1.add_series({
-                            'name': 'Samples',
-                            'categories': [sheet_name, 1, 26, max_row, 26],
-                            'values':     [sheet_name, 1, 29, max_row, 29],
-                            'marker': {'type': 'circle', 'size': 5, 'fill': {'color': '#4F81BD'}, 'border': {'none': True}},
-                            'line':   {'none': True}
-                        })
-                        chart1.add_series({
-                            'name': 'Blank',
-                            'categories': [sheet_name, 1, 26, max_row, 26],
-                            'values':     [sheet_name, 1, 28, max_row, 28],
-                            'marker': {'type': 'circle', 'size': 5, 'fill': {'color': '#F79646'}, 'border': {'none': True}},
-                            'line':   {'none': True}
-                        })
-                        chart1.add_series({
-                            'name': 'CCQC',
-                            'categories': [sheet_name, 1, 26, max_row, 26],
-                            'values':     [sheet_name, 1, 27, max_row, 27],
-                            'marker': {'type': 'circle', 'size': 5, 'fill': {'color': '#C0504D'}, 'border': {'none': True}},
-                            'line':   {'none': True}
-                        })
-                        
-                        chart1.set_title({'name': 'IS Variation Plot', 'name_font': {'size': 12, 'name': 'Times New Roman'}})
-                        chart1.set_x_axis({'name': 'Injection Order', 'name_font': {'size': 10, 'name': 'Times New Roman'}, 'num_font': {'name': 'Times New Roman'}, 'major_gridlines': {'visible': False}})
-                        chart1.set_y_axis({'name': '% Difference from Mean IS', 'name_font': {'size': 10, 'name': 'Times New Roman'}, 'num_font': {'name': 'Times New Roman'}, 'major_gridlines': {'visible': True}, 'num_format': '0.00'})
-                        chart1.set_legend({'position': 'right', 'font': {'name': 'Times New Roman', 'size': 10}})
-                        chart1.set_size({'width': 450, 'height': 230})
-                        chart1.show_hidden_data()
-                        worksheet.insert_chart('G18', chart1)
-                        
-                        chart2 = workbook.add_chart({'type': 'scatter', 'subtype': 'straight_with_markers'})
-                        chart2.add_series({
-                            'name': 'Concentration',
-                            'categories': [sheet_name, 1, 26, max_row, 26],
-                            'values':     [sheet_name, 1, 3, max_row, 3],
-                            'marker': {'type': 'diamond', 'size': 5, 'fill': {'color': '#4F81BD'}, 'border': {'color': '#4F81BD'}},
-                            'line':   {'color': '#4F81BD', 'width': 1.5}
-                        })
-                        chart2.set_title({'name': 'Chart Title', 'name_font': {'size': 14, 'bold': True, 'name': 'Times New Roman'}})
-                        chart2.set_x_axis({'major_gridlines': {'visible': False}, 'num_font': {'name': 'Times New Roman'}})
-                        chart2.set_y_axis({'major_gridlines': {'visible': True}, 'num_format': '0.000', 'num_font': {'name': 'Times New Roman'}})
-                        chart2.set_legend({'none': True})
-                        chart2.set_size({'width': 450, 'height': 230})
-                        chart2.show_hidden_data()
-                        worksheet.insert_chart('G30', chart2)
-                        
-                        or_start = 45
-                        worksheet.write(or_start, 6, "Out of Range %IS Sample", header_format)
-                        worksheet.write(or_start, 7, "Concentration", header_format)
-                        worksheet.write(or_start, 8, "Above ULOQ Samples", header_format)
-                        worksheet.write(or_start, 9, "Concentration", header_format)
-                        
-                        out_is = meta.get('out_of_range', [])
-                        for i, smp in enumerate(out_is):
-                            worksheet.write(or_start + 1 + i, 6, smp['name'], table_data)
-                            worksheet.write(or_start + 1 + i, 7, smp['conc'], table_data_float)
-                            
-                        above_u = meta.get('above_uloq', [])
-                        for i, smp in enumerate(above_u):
-                            worksheet.write(or_start + 1 + i, 8, smp['name'], table_data)
-                            worksheet.write(or_start + 1 + i, 9, smp['conc'], table_data_float)
+            # VBA Exact Formatting
+            data_white = workbook.add_format({**tnr, 'bg_color': '#FFFFFF', 'border': 1, 'align': 'center', 'valign': 'vcenter'})
+            data_white_float = workbook.add_format({**tnr, 'bg_color': '#FFFFFF', 'border': 1, 'align': 'center', 'valign': 'vcenter', 'num_format': '0.000'})
+            data_white_pct = workbook.add_format({**tnr, 'bg_color': '#FFFFFF', 'border': 1, 'align': 'center', 'valign': 'vcenter', 'num_format': '0.00'})
+            data_white_r = workbook.add_format({**tnr, 'bg_color': '#FFFFFF', 'border': 1, 'align': 'center', 'valign': 'vcenter', 'num_format': '0.0000'})
+            data_yellow_float = workbook.add_format({**tnr, 'bg_color': '#FFFF00', 'border': 1, 'align': 'center', 'valign': 'vcenter', 'num_format': '0.000'})
+            table_header_green = workbook.add_format({**tnr, 'bold': True, 'bg_color': '#C6E0B4', 'border': 1, 'align': 'center', 'valign': 'vcenter'})
+            table_header_gray = workbook.add_format({**tnr, 'bold': True, 'bg_color': '#D9D9D9', 'border': 1, 'align': 'center', 'valign': 'vcenter'})
 
+            # --- RENDER SUMMARY, CC, QC ---
+            for sheet_name in ["Summary", "CC", "QC"]:
+                if sheet_name in excel_tabs:
+                    df_tab = excel_tabs[sheet_name]
+                    worksheet = writer.sheets[sheet_name]
+                    for col_num, value in enumerate(df_tab.columns): worksheet.write(0, col_num, value, header_format)
+                    worksheet.set_column('A:A', 35) 
+                    
+                    if sheet_name == "Summary":
+                        worksheet.set_column('B:Z', 25, general_fmt)
+                        for row_num, row_data in enumerate(df_tab.values):
+                            row_fmt = success_fmt if row_data[1] == "SUCCESS" else failed_fmt
+                            for col_num, value in enumerate(row_data): worksheet.write(row_num + 1, col_num, value, row_fmt)
+                                
+                    elif sheet_name == "CC":
+                        worksheet.set_column(1, 2, 15, general_fmt)
+                        start_c = 3
+                        end_c = 3 + len(std_names) - 1
+                        if end_c >= start_c: worksheet.set_column(start_c, end_c, 15, conc_fmt)
+                        worksheet.set_column(end_c + 1, end_c + 2, 15, general_fmt)
+                        worksheet.set_column(end_c + 3, end_c + 3, 15, r_fmt)
+                        
+                    elif sheet_name == "QC":
+                        worksheet.set_column(1, 3, 15, general_fmt)
+                        worksheet.set_column(4, 7, 15, conc_fmt)
+
+            # --- INDIVIDUAL BATCH TABS - FULL LAYOUT ---
+            for safe_sheet_name, meta in batch_meta_data.items():
+                ws = workbook.add_worksheet(safe_sheet_name)
+                final_rows = meta['rows']
+                chart_data = meta['chart_data']
+                max_row = len(final_rows)
+                
+                ws.set_column('A:AD', 15, green_sheet_bg)
+                ws.set_column('A:A', 25, green_sheet_bg)
+                ws.set_column('G:G', 20, green_sheet_bg)
+                ws.set_column('H:H', 15, green_sheet_bg)
+                ws.set_column('I:I', 20, green_sheet_bg)
+                ws.set_column('J:J', 15, green_sheet_bg)
+                ws.set_column('K:K', 15, green_sheet_bg)
+                
+                for r_idx, row_dict in enumerate(final_rows):
+                    if r_idx == 0:
+                        ws.merge_range(0, 0, 0, 4, row_dict["Sample Name"], table_header_green)
+                    elif row_dict["Sample Name"] == "Average IS area of CC and QC":
+                        ws.merge_range(r_idx, 0, r_idx, 1, row_dict["Sample Name"], table_header_gray)
+                        ws.write(r_idx, 2, row_dict["IS area"], data_white)
+                        ws.write(r_idx, 3, "", data_white)
+                        ws.write(r_idx, 4, "", data_white)
+                    elif row_dict["Sample Name"] == "Sample Name":
+                        ws.write(r_idx, 0, "Sample Name", table_header_green)
+                        ws.write(r_idx, 1, "Area", table_header_green)
+                        ws.write(r_idx, 2, "IS area", table_header_green)
+                        ws.write(r_idx, 3, "Calc.Conc.", table_header_green)
+                        ws.write(r_idx, 4, "% Acc", table_header_green)
+                    else:
+                        ws.write(r_idx, 0, row_dict["Sample Name"], data_white)
+                        ws.write(r_idx, 1, "" if pd.isna(row_dict["Area"]) else row_dict["Area"], data_white)
+                        ws.write(r_idx, 2, "" if pd.isna(row_dict["IS area"]) else row_dict["IS area"], data_white)
+                        conc_val = row_dict["Calc.Conc."]
+                        if pd.notna(conc_val) and isinstance(conc_val, (int, float)) and conc_val > uloq:
+                            ws.write(r_idx, 3, conc_val, data_yellow_float)
+                        else:
+                            ws.write(r_idx, 3, "" if pd.isna(conc_val) else conc_val, data_white_float)
+                        ws.write(r_idx, 4, "" if pd.isna(row_dict["% Accuracy"]) else row_dict["% Accuracy"], data_white_pct)
+
+                    c_tuple = chart_data[r_idx]
+                    ws.write(r_idx, 26, "" if pd.isna(c_tuple[0]) else c_tuple[0])
+                    ws.write(r_idx, 27, "" if pd.isna(c_tuple[1]) else c_tuple[1])
+                    ws.write(r_idx, 28, "" if pd.isna(c_tuple[2]) else c_tuple[2])
+                    ws.write(r_idx, 29, "" if pd.isna(c_tuple[3]) else c_tuple[3])
+
+                ws.set_column(26, 29, None, None, {'hidden': True})
+                
+                # Right Dashboard Generation
+                ws.write('G2', 'Intercept', data_white)
+                ws.write('H2', meta.get('intercept', ''), data_white_float)
+                ws.write('G3', 'Slope', data_white)
+                ws.write('H3', meta.get('slope', ''), data_white_float)
+                ws.write('G4', 'r', data_white)
+                ws.write('H4', meta.get('r_val', ''), data_white_r)
+                
+                ws.write('G6', 'No of CC passed', table_header_gray)
+                ws.write('H6', meta.get('cc_pass', ''), data_white)
+                ws.write('G7', 'LQC', table_header_gray)
+                ws.write('H7', meta.get('lqc_pass', ''), data_white)
+                ws.write('G8', 'MMQC', table_header_gray)
+                ws.write('H8', meta.get('mmqc_pass', ''), data_white)
+                ws.write('G9', 'MQC', table_header_gray)
+                ws.write('H9', meta.get('mqc_pass', ''), data_white)
+                ws.write('G10', 'HQC', table_header_gray)
+                ws.write('H10', meta.get('hqc_pass', ''), data_white)
+                
+                co_headers = ['Sample name', 'Analyte Area', 'IS area', '% analyte', '% IS']
+                for c_idx, h in enumerate(co_headers): ws.write(12, 6 + c_idx, h, table_header_green)
+                    
+                co_samples = meta.get('carryover', [])
+                for r_idx, smp in enumerate(co_samples):
+                    r = 13 + r_idx
+                    a_area = smp['a_area']
+                    is_area = smp['is_area']
+                    pct_a = (a_area / meta['std_a_area']) * 100 if meta.get('std_a_area') and pd.notna(a_area) and meta['std_a_area'] > 0 else np.nan
+                    pct_is = (is_area / meta['std_zero_is_area']) * 100 if meta.get('std_zero_is_area') and pd.notna(is_area) and meta['std_zero_is_area'] > 0 else np.nan
+                    
+                    ws.write(r, 6, smp['name'], data_white)
+                    ws.write(r, 7, "" if pd.isna(a_area) else a_area, data_white)
+                    ws.write(r, 8, "" if pd.isna(is_area) else is_area, data_white)
+                    ws.write(r, 9, "NA" if pd.isna(pct_a) else pct_a, data_white_pct if pd.notna(pct_a) else data_white)
+                    ws.write(r, 10, "NA" if pd.isna(pct_is) else pct_is, data_white_pct if pd.notna(pct_is) else data_white)
+                
+                if max_row > 0:
+                    chart1 = workbook.add_chart({'type': 'scatter'})
+                    chart1.add_series({'name': 'Samples', 'categories': [safe_sheet_name, 1, 26, max_row-1, 26], 'values': [safe_sheet_name, 1, 29, max_row-1, 29], 'marker': {'type': 'circle', 'size': 5, 'fill': {'color': '#4F81BD'}, 'border': {'none': True}}, 'line': {'none': True}})
+                    chart1.add_series({'name': 'Blank', 'categories': [safe_sheet_name, 1, 26, max_row-1, 26], 'values': [safe_sheet_name, 1, 28, max_row-1, 28], 'marker': {'type': 'circle', 'size': 5, 'fill': {'color': '#F79646'}, 'border': {'none': True}}, 'line': {'none': True}})
+                    chart1.add_series({'name': 'CCQC', 'categories': [safe_sheet_name, 1, 26, max_row-1, 26], 'values': [safe_sheet_name, 1, 27, max_row-1, 27], 'marker': {'type': 'circle', 'size': 5, 'fill': {'color': '#C0504D'}, 'border': {'none': True}}, 'line': {'none': True}})
+                    chart1.set_title({'name': 'IS Variation Plot', 'name_font': {'size': 12, 'name': 'Times New Roman'}})
+                    chart1.set_x_axis({'name': 'Injection Order', 'name_font': {'size': 10, 'name': 'Times New Roman'}, 'num_font': {'name': 'Times New Roman'}, 'major_gridlines': {'visible': False}})
+                    chart1.set_y_axis({'name': '% Difference from Mean IS', 'name_font': {'size': 10, 'name': 'Times New Roman'}, 'num_font': {'name': 'Times New Roman'}, 'major_gridlines': {'visible': True}, 'num_format': '0.00'})
+                    chart1.set_legend({'position': 'right', 'font': {'name': 'Times New Roman', 'size': 10}})
+                    chart1.set_size({'width': 450, 'height': 230})
+                    chart1.show_hidden_data()
+                    ws.insert_chart('G18', chart1)
+                    
+                    chart2 = workbook.add_chart({'type': 'scatter', 'subtype': 'straight_with_markers'})
+                    chart2.add_series({'name': 'Concentration', 'categories': [safe_sheet_name, 1, 26, max_row-1, 26], 'values': [safe_sheet_name, 1, 3, max_row-1, 3], 'marker': {'type': 'diamond', 'size': 5, 'fill': {'color': '#4F81BD'}, 'border': {'color': '#4F81BD'}}, 'line': {'color': '#4F81BD', 'width': 1.5}})
+                    chart2.set_title({'name': 'Chart Title', 'name_font': {'size': 14, 'bold': True, 'name': 'Times New Roman'}})
+                    chart2.set_x_axis({'major_gridlines': {'visible': False}, 'num_font': {'name': 'Times New Roman'}})
+                    chart2.set_y_axis({'major_gridlines': {'visible': True}, 'num_format': '0.000', 'num_font': {'name': 'Times New Roman'}})
+                    chart2.set_legend({'none': True})
+                    chart2.set_size({'width': 450, 'height': 230})
+                    chart2.show_hidden_data()
+                    ws.insert_chart('G30', chart2)
+                    
+                    or_start = 45
+                    ws.write(or_start, 6, "Out of Range %IS Sample", table_header_green)
+                    ws.write(or_start, 7, "Concentration", table_header_green)
+                    ws.write(or_start, 8, "Above ULOQ Samples", table_header_green)
+                    ws.write(or_start, 9, "Concentration", table_header_green)
+                    ws.write(or_start, 10, "Dose Repeats", table_header_green)
+                    ws.write(or_start, 11, "Concentration", table_header_green)
+                    
+                    out_is = meta.get('out_of_range', [])
+                    for i, smp in enumerate(out_is):
+                        ws.write(or_start + 1 + i, 6, smp['name'], data_white)
+                        ws.write(or_start + 1 + i, 7, smp['conc'], data_yellow_float if pd.notna(smp['conc']) and smp['conc'] > uloq else data_white_float)
+                        
+                    above_u = meta.get('above_uloq', [])
+                    for i, smp in enumerate(above_u):
+                        ws.write(or_start + 1 + i, 8, smp['name'], data_white)
+                        ws.write(or_start + 1 + i, 9, smp['conc'], data_yellow_float)
+
+            # Formats for CC and QC Standard Sheets
             for target_sheet in ["CC", "QC"]:
                 if target_sheet in excel_tabs:
                     ws = writer.sheets[target_sheet]
@@ -530,6 +550,7 @@ if st.button("Generate Dashboard"):
                         ws.write_formula(stat_row + 3, col_num, f"=IFERROR(({col_letter}{stat_row + 1}/{col_letter}2)*100, \"\")", pct_fmt)
                         ws.conditional_format(data_range, {'type': 'formula', 'criteria': f"=AND(ISNUMBER({col_letter}5), OR({col_letter}5<{col_letter}$3, {col_letter}5>{col_letter}$4))", 'format': yellow_flag})
 
+            # Concentration Matrix Tab
             ws_conc = workbook.add_worksheet("Concentration Data")
             ws_conc.set_column('A:E', 20, general_fmt)
             ws_conc.merge_range('A1:B1', "Molecule Name", header_format)
@@ -560,7 +581,7 @@ if st.button("Generate Dashboard"):
                 ws_conc.write(row_idx, 4, s_name, general_fmt)
                 row_idx += 1
 
-        st.success("Dashboard successfully generated!")
+        st.success("Dashboard successfully matched to Legacy Format!")
         st.download_button(
             label="Download Master Excel Dashboard",
             data=output.getvalue(),
