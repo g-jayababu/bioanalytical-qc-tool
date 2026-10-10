@@ -200,12 +200,10 @@ if st.button("Generate Dashboard"):
         # --- 3. CONSTRUCT AND SORT VBA-STYLE DATAFRAMES ---
         excel_tabs["Summary"] = pd.DataFrame(summary_log)
         
-        # Helper function to extract trailing numbers for Natural Sorting (e.g., CC-2 before CC-10)
         def extract_sort_num(val):
             nums = re.findall(r'\d+', str(val))
             return int(nums[-1]) if nums else 0
 
-        # Sort and build CC DataFrame
         if cc_file_data:
             cc_df_data = pd.DataFrame(cc_file_data)
             cc_df_data['Sort_Num'] = cc_df_data['CCID'].apply(extract_sort_num)
@@ -224,17 +222,14 @@ if st.button("Generate Dashboard"):
             cc_df = pd.concat([pd.DataFrame([row_nom_cc, row_low_cc, row_up_cc]), cc_df_data], ignore_index=True)
             excel_tabs["CC"] = cc_df[cc_columns]
 
-        # Sort and build QC DataFrame
         if qc_file_data:
             qc_df_data = pd.DataFrame(qc_file_data)
             qc_df_data['Original_Index'] = qc_df_data.index
             qc_df_data['Block'] = qc_df_data.index // 4
             
-            # Find the sort number based on the first LQC ID in each 4-row block
             block_sort_keys = qc_df_data.groupby('Block')['LQC, HQC ID'].first().apply(extract_sort_num)
             qc_df_data['Sort_Num'] = qc_df_data['Block'].map(block_sort_keys)
             
-            # Sort by the extracted number, keeping the 4 rows in each block locked together
             qc_df_data = qc_df_data.sort_values(by=['Sort_Num', 'Block', 'Original_Index']).drop(['Sort_Num', 'Block', 'Original_Index'], axis=1)
             
             qc_columns = ['Acquisition Date', 'SUBJECT ID', 'LQC, HQC ID', 'MQC, MMQC ID', 'LQC', 'MMQC', 'MQC', 'HQC']
@@ -260,19 +255,55 @@ if st.button("Generate Dashboard"):
             
             workbook = writer.book
             
+            # --- DEFINE FORMATTING STYLES ---
             header_format = workbook.add_format({'bold': True, 'bg_color': '#C6E0B4', 'border': 1, 'align': 'center', 'valign': 'vcenter'})
             yellow_flag = workbook.add_format({'bg_color': '#FFFF00', 'bold': True, 'font_color': '#FF0000'})
             bold_label = workbook.add_format({'bold': True, 'align': 'right'})
+            
+            # Column Number Formats
+            general_fmt = workbook.add_format({'align': 'center'})
+            conc_fmt = workbook.add_format({'num_format': '0.000', 'align': 'center'})
+            r_fmt = workbook.add_format({'num_format': '0.0000', 'align': 'center'})
+            
+            # Statistical Row Formats
             float_fmt = workbook.add_format({'num_format': '0.000', 'align': 'center'})
             stdev_fmt = workbook.add_format({'num_format': '0.0000', 'align': 'center'})
             pct_fmt = workbook.add_format({'num_format': '0.00', 'align': 'center'})
             
+            # --- APPLY COLUMN FORMATTING ---
             for sheet_name in writer.sheets:
                 worksheet = writer.sheets[sheet_name]
+                
+                # Header row
                 for col_num, value in enumerate(writer.sheets[sheet_name].table[0]):
                     worksheet.write(0, col_num, value, header_format)
+                    
                 worksheet.set_column('A:A', 25) 
-                worksheet.set_column('B:Z', 15)
+                
+                if sheet_name == "Summary":
+                    worksheet.set_column('B:Z', 15, general_fmt)
+                    
+                elif sheet_name == "CC":
+                    # Meta columns
+                    worksheet.set_column(1, 2, 15, general_fmt)
+                    
+                    # 3 Digits for Concentrations
+                    start_c = 3
+                    end_c = 3 + len(std_names) - 1
+                    if end_c >= start_c:
+                        worksheet.set_column(start_c, end_c, 15, conc_fmt)
+                        
+                    # System Generated (General) for Slope and Intercept
+                    worksheet.set_column(end_c + 1, end_c + 2, 15, general_fmt)
+                    
+                    # 4 Digits for Correlation Coefficient (r)
+                    worksheet.set_column(end_c + 3, end_c + 3, 15, r_fmt)
+                    
+                elif sheet_name == "QC":
+                    # Meta columns
+                    worksheet.set_column(1, 3, 15, general_fmt)
+                    # 3 Digits for QC Concentrations
+                    worksheet.set_column(4, 7, 15, conc_fmt)
 
             # --- INJECT STATS & CONDITIONAL FORMATTING ---
             for target_sheet in ["CC", "QC"]:
@@ -308,7 +339,7 @@ if st.button("Generate Dashboard"):
                             'format': yellow_flag
                         })
 
-        st.success("Dashboard successfully generated with CC & QC Statistical Formatting!")
+        st.success("Dashboard successfully generated with precise number formatting!")
         st.download_button(
             label="Download Master Excel Dashboard",
             data=output.getvalue(),
