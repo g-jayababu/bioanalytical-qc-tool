@@ -80,9 +80,12 @@ if st.button("Generate Dashboard"):
         qc_file_data = []
         global_samples = {}
         batch_meta_data = {}
+        all_repeats_data = [] # Centralized list for all batch anomalies
         
         for file in uploaded_files:
             file.seek(0)
+            safe_sheet_name = re.sub(r'[\\/*?:\[\]]', '_', file.name)[:31]
+            
             df, error_msg = load_data(file)
             if df is None:
                 summary_log.append({"File Name": file.name, "Status": "FAILED", "Error Details": error_msg, "Nominal Conc. Check": "", "Duplicate CC & QC ID Check": "", "Duplicate Sample Name Check": ""})
@@ -121,7 +124,6 @@ if st.button("Generate Dashboard"):
             conc_col = next((c for c in df.columns if 'calc' in c and 'conc' in c), None)
             acc_col = next((c for c in df.columns if 'accur' in c), None)
             
-            # Robust extraction of the Analyte Area (the Area column that is NOT the IS Area)
             analyte_area_col = next((c for c in df.columns if 'area' in c and 'ratio' not in c and c != is_area_col), None)
             
             date_col = next((c for c in df.columns if 'acq date' in c or 'acquisition date' in c or 'date/time' in c or 'date' in c), None)
@@ -176,7 +178,6 @@ if st.button("Generate Dashboard"):
             sample_chart = []
             current_inj = 1
             
-            # Header Row for CC/QC
             ccqc_rows.append({"Sample Name": "CC and QC", "Area": "", "IS area": "", "Calc.Conc.": "", "% Accuracy": ""})
             ccqc_chart.append((np.nan, np.nan, np.nan, np.nan, np.nan))
             
@@ -251,6 +252,12 @@ if st.button("Generate Dashboard"):
             file_cc_dict['r'] = "" if pd.isna(r_val) else r_val
             cc_file_data.append(file_cc_dict)
             
+            # Master Log Collection for the Repeats Tab
+            for smp in out_of_range_is:
+                all_repeats_data.append({"Batch Name": safe_sheet_name, "Sample Name": smp['name'], "Concentration": smp['conc'], "Reason Code": "Out of Range %IS"})
+            for smp in above_uloq:
+                all_repeats_data.append({"Batch Name": safe_sheet_name, "Sample Name": smp['name'], "Concentration": smp['conc'], "Reason Code": "Above ULOQ"})
+            
             for i in range(4):
                 q_dict = {
                     'Date of first injection': acq_date if i==0 else "", 'SUBJECT ID': subj_id if i==0 else "",
@@ -260,8 +267,6 @@ if st.button("Generate Dashboard"):
                 }
                 qc_file_data.append(q_dict)
                 
-            safe_sheet_name = re.sub(r'[\\/*?:\[\]]', '_', file.name)[:31]
-            
             avg_row = {"Sample Name": "Average IS area of CC and QC", "Area": "", "IS area": avg_is_area, "Calc.Conc.": "", "% Accuracy": ""}
             header_row = {"Sample Name": "Sample Name", "Area": "Area", "IS area": "IS area", "Calc.Conc.": "Calc.Conc.", "% Accuracy": "% Acc"}
             
@@ -285,7 +290,13 @@ if st.button("Generate Dashboard"):
                 "Nominal Conc. Check": nom_check_msg, "Duplicate CC & QC ID Check": dup_ccqc_msg, "Duplicate Sample Name Check": dup_samp_msg
             })
 
+        # Finalize Top-Level Tab Constructs
         excel_tabs["Summary"] = pd.DataFrame(summary_log)
+        
+        if all_repeats_data:
+            excel_tabs["Repeats"] = pd.DataFrame(all_repeats_data)
+        else:
+            excel_tabs["Repeats"] = pd.DataFrame([{"Batch Name": "-", "Sample Name": "-", "Concentration": "-", "Reason Code": "No Repeats Required"}])
         
         if cc_file_data:
             cc_df_data = pd.DataFrame(cc_file_data)
@@ -326,12 +337,14 @@ if st.button("Generate Dashboard"):
         with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
             
             excel_tabs["Summary"].to_excel(writer, sheet_name="Summary", index=False)
+            if "Repeats" in excel_tabs: excel_tabs["Repeats"].to_excel(writer, sheet_name="Repeats", index=False)
             if "CC" in excel_tabs: excel_tabs["CC"].to_excel(writer, sheet_name="CC", index=False)
             if "QC" in excel_tabs: excel_tabs["QC"].to_excel(writer, sheet_name="QC", index=False)
             
             workbook = writer.book
             
             tnr = {'font_name': 'Times New Roman', 'font_size': 10}
+            
             green_sheet_bg = workbook.add_format({**tnr, 'bg_color': '#CDE4CE'})
             header_format = workbook.add_format({**tnr, 'bold': True, 'bg_color': '#C6E0B4', 'border': 1, 'align': 'center', 'valign': 'vcenter'})
             yellow_flag = workbook.add_format({**tnr, 'bg_color': '#FFFF00', 'bold': True, 'font_color': '#FF0000'})
@@ -354,7 +367,8 @@ if st.button("Generate Dashboard"):
             table_header_green = workbook.add_format({**tnr, 'bold': True, 'bg_color': '#C6E0B4', 'border': 1, 'align': 'center', 'valign': 'vcenter'})
             table_header_gray = workbook.add_format({**tnr, 'bold': True, 'bg_color': '#D9D9D9', 'border': 1, 'align': 'center', 'valign': 'vcenter'})
 
-            for sheet_name in ["Summary", "CC", "QC"]:
+            # --- RENDER SUMMARY, REPEATS, CC, QC ---
+            for sheet_name in ["Summary", "Repeats", "CC", "QC"]:
                 if sheet_name in excel_tabs:
                     df_tab = excel_tabs[sheet_name]
                     worksheet = writer.sheets[sheet_name]
@@ -366,6 +380,11 @@ if st.button("Generate Dashboard"):
                         for row_num, row_data in enumerate(df_tab.values):
                             row_fmt = success_fmt if row_data[1] == "SUCCESS" else failed_fmt
                             for col_num, value in enumerate(row_data): worksheet.write(row_num + 1, col_num, value, row_fmt)
+                    
+                    elif sheet_name == "Repeats":
+                        worksheet.set_column('B:B', 30, general_fmt)
+                        worksheet.set_column('C:C', 15, conc_fmt)
+                        worksheet.set_column('D:D', 25, general_fmt)
                                 
                     elif sheet_name == "CC":
                         worksheet.set_column(1, 2, 15, general_fmt)
@@ -379,6 +398,7 @@ if st.button("Generate Dashboard"):
                         worksheet.set_column(1, 3, 15, general_fmt)
                         worksheet.set_column(4, 7, 15, conc_fmt)
 
+            # --- INDIVIDUAL BATCH TABS - FULL LAYOUT ---
             for safe_sheet_name, meta in batch_meta_data.items():
                 ws = workbook.add_worksheet(safe_sheet_name)
                 final_rows = meta['rows']
@@ -575,7 +595,7 @@ if st.button("Generate Dashboard"):
                 ws_conc.write(row_idx, 4, s_name, general_fmt)
                 row_idx += 1
 
-        st.success("Dashboard generated. Missing area resolved.")
+        st.success("Dashboard generated successfully with Repeats Tracker!")
         st.download_button(
             label="Download Master Excel Dashboard",
             data=output.getvalue(),
