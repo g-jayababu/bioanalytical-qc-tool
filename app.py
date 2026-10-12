@@ -400,7 +400,6 @@ if st.button("Generate Dashboard"):
             table_header_green = workbook.add_format({**tnr, 'bold': True, 'bg_color': '#C6E0B4', 'border': 1, 'align': 'center', 'valign': 'vcenter'})
             table_header_gray = workbook.add_format({**tnr, 'bold': True, 'bg_color': '#D9D9D9', 'border': 1, 'align': 'center', 'valign': 'vcenter'})
             
-            # Specific formatting for failed CC/QC bounds
             failed_ccqc_string_fmt = workbook.add_format({**tnr, 'bg_color': '#FFFF00', 'bold': True, 'font_color': '#000000', 'border': 1, 'align': 'center', 'valign': 'vcenter'})
             failed_ccqc_float_fmt = workbook.add_format({**tnr, 'bg_color': '#FFFF00', 'bold': True, 'font_color': '#000000', 'border': 1, 'align': 'center', 'valign': 'vcenter', 'num_format': '0.000'})
 
@@ -486,9 +485,9 @@ if st.button("Generate Dashboard"):
                 ws.set_column(26, 30, None, None, {'hidden': True})
                 
                 ws.write('G2', 'Intercept', data_white)
-                ws.write('H2', meta.get('intercept', ''), data_white_float)
+                ws.write('H2', meta.get('intercept', ''), data_white)
                 ws.write('G3', 'Slope', data_white)
-                ws.write('H3', meta.get('slope', ''), data_white_float)
+                ws.write('H3', meta.get('slope', ''), data_white)
                 ws.write('G4', 'r', data_white)
                 ws.write('H4', meta.get('r_val', ''), data_white_r)
                 
@@ -573,14 +572,22 @@ if st.button("Generate Dashboard"):
                     start_col = 3 if target_sheet == "CC" else 4
                     end_col = len(std_names) + 3 if target_sheet == "CC" else 8
                     
-                    # Manually overwrite dataframe rendering to enforce borders & formatting
                     for r in range(1, num_rows + 1):
                         for c in range(len(df_target.columns)):
                             val = df_target.iloc[r-1, c]
-                            fmt = data_white_float if isinstance(val, (int, float)) else data_white
+                            col_name = df_target.columns[c]
+                            
+                            # Standard formatting mapping
+                            if target_sheet == "CC" and col_name in ['Slope', 'Intercept']:
+                                fmt = data_white
+                            elif target_sheet == "CC" and col_name == 'r':
+                                fmt = data_white_r if isinstance(val, (int, float)) else data_white
+                            else:
+                                fmt = data_white_float if isinstance(val, (int, float)) else data_white
+                            
                             out_val = "" if pd.isna(val) else val
                             
-                            # Determine if value failed bounds (starts on row 4 to skip Nom/Limits)
+                            # Check bounds logic for standard values only
                             if r > 3 and start_col <= c < end_col and pd.notna(val) and val != "":
                                 try:
                                     num_val = float(val)
@@ -598,7 +605,6 @@ if st.button("Generate Dashboard"):
                             
                             ws.write(r, c, out_val, fmt)
                     
-                    # Apply merges for headers
                     ws.merge_range(0, 0, 3, 0, df_target.columns[0], header_format)
                     ws.merge_range(0, 1, 3, 1, df_target.columns[1], header_format)
                     
