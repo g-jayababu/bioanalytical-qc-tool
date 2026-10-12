@@ -85,7 +85,6 @@ if st.button("Generate Dashboard"):
         all_repeats_data = [] 
         repeat_samples = {}
         
-        # Combine uploaded_files and repeat_files for universal parsing
         combined_files = [(f, False) for f in uploaded_files]
         if repeat_files:
             combined_files.extend([(f, True) for f in repeat_files])
@@ -284,7 +283,6 @@ if st.button("Generate Dashboard"):
             file_cc_dict['r'] = "" if pd.isna(r_val) else r_val
             cc_file_data.append(file_cc_dict)
             
-            # Ensure Repeat Files do not trigger new repeat entries in the Tracker
             if not is_repeat:
                 for smp in out_of_range_is:
                     all_repeats_data.append({"Batch Name": safe_sheet_name, "Sample Name": smp['name'], "Concentration": smp['conc'], "Reason Code": "Out of Range %IS"})
@@ -380,9 +378,8 @@ if st.button("Generate Dashboard"):
             
             green_sheet_bg = workbook.add_format({**tnr, 'bg_color': '#CDE4CE'})
             header_format = workbook.add_format({**tnr, 'bold': True, 'bg_color': '#C6E0B4', 'border': 1, 'align': 'center', 'valign': 'vcenter'})
-            yellow_flag = workbook.add_format({**tnr, 'bg_color': '#FFFF00', 'bold': True, 'font_color': '#FF0000'})
+            yellow_flag = workbook.add_format({**tnr, 'bg_color': '#FFFF00', 'bold': True, 'font_color': '#000000', 'border': 1})
             
-            # Formats adjusted to include borders for bottom stats and merges
             bold_label = workbook.add_format({**tnr, 'bold': True, 'align': 'right', 'border': 1})
             general_fmt = workbook.add_format({**tnr, 'align': 'center', 'valign': 'vcenter'})
             conc_fmt = workbook.add_format({**tnr, 'num_format': '0.000', 'align': 'center', 'valign': 'vcenter'})
@@ -402,6 +399,10 @@ if st.button("Generate Dashboard"):
             data_yellow_float = workbook.add_format({**tnr, 'bg_color': '#FFFF00', 'border': 1, 'align': 'center', 'valign': 'vcenter', 'num_format': '0.000'})
             table_header_green = workbook.add_format({**tnr, 'bold': True, 'bg_color': '#C6E0B4', 'border': 1, 'align': 'center', 'valign': 'vcenter'})
             table_header_gray = workbook.add_format({**tnr, 'bold': True, 'bg_color': '#D9D9D9', 'border': 1, 'align': 'center', 'valign': 'vcenter'})
+            
+            # Specific formatting for failed CC/QC bounds
+            failed_ccqc_string_fmt = workbook.add_format({**tnr, 'bg_color': '#FFFF00', 'bold': True, 'font_color': '#000000', 'border': 1, 'align': 'center', 'valign': 'vcenter'})
+            failed_ccqc_float_fmt = workbook.add_format({**tnr, 'bg_color': '#FFFF00', 'bold': True, 'font_color': '#000000', 'border': 1, 'align': 'center', 'valign': 'vcenter', 'num_format': '0.000'})
 
             for sheet_name in ["Summary", "Repeats", "CC", "QC"]:
                 if sheet_name in excel_tabs:
@@ -561,7 +562,7 @@ if st.button("Generate Dashboard"):
                         ws.write(or_start + 1 + i, 8, smp['name'], data_white)
                         ws.write(or_start + 1 + i, 9, smp['conc'], data_yellow_float)
 
-            # --- APPLY BORDERS AND STATS TO CC AND QC TABS ---
+            # --- APPLY BORDERS, STATS, AND FAILURE FORMATTING TO CC AND QC TABS ---
             for target_sheet in ["CC", "QC"]:
                 if target_sheet in excel_tabs:
                     ws = writer.sheets[target_sheet]
@@ -569,12 +570,33 @@ if st.button("Generate Dashboard"):
                     num_rows = len(df_target)
                     stat_row = num_rows + 1 
                     
-                    # Manually overwrite the dataframe rendering to enforce borders
+                    start_col = 3 if target_sheet == "CC" else 4
+                    end_col = len(std_names) + 3 if target_sheet == "CC" else 8
+                    
+                    # Manually overwrite dataframe rendering to enforce borders & formatting
                     for r in range(1, num_rows + 1):
                         for c in range(len(df_target.columns)):
                             val = df_target.iloc[r-1, c]
                             fmt = data_white_float if isinstance(val, (int, float)) else data_white
-                            ws.write(r, c, "" if pd.isna(val) else val, fmt)
+                            out_val = "" if pd.isna(val) else val
+                            
+                            # Determine if value failed bounds (starts on row 4 to skip Nom/Limits)
+                            if r > 3 and start_col <= c < end_col and pd.notna(val) and val != "":
+                                try:
+                                    num_val = float(val)
+                                    lower_limit = float(df_target.iloc[1, c])
+                                    upper_limit = float(df_target.iloc[2, c])
+                                    if num_val < lower_limit or num_val > upper_limit:
+                                        if target_sheet == "CC":
+                                            out_val = f"{num_val:.3f}*"
+                                            fmt = failed_ccqc_string_fmt
+                                        else:
+                                            out_val = num_val
+                                            fmt = failed_ccqc_float_fmt
+                                except (ValueError, TypeError):
+                                    pass
+                            
+                            ws.write(r, c, out_val, fmt)
                     
                     # Apply merges for headers
                     ws.merge_range(0, 0, 3, 0, df_target.columns[0], header_format)
@@ -598,9 +620,6 @@ if st.button("Generate Dashboard"):
                     ws.write(stat_row + 1, label_col, "SD", bold_label)
                     ws.write(stat_row + 2, label_col, "%CV", bold_label)
                     ws.write(stat_row + 3, label_col, "%Accuracy", bold_label)
-                    
-                    start_col = 3 if target_sheet == "CC" else 4
-                    end_col = len(std_names) + 3 if target_sheet == "CC" else 8
                     
                     for col_num in range(start_col, end_col):
                         col_letter = xl_col_to_name(col_num)
@@ -633,7 +652,6 @@ if st.button("Generate Dashboard"):
                     
                     mapped_samples[(subj_int, period_clean, tp_float)] = (conc, s_name)
             
-            # Initial Data Matrix
             ws_conc = workbook.add_worksheet("Concentration Data")
             ws_conc.set_column('A:B', 15, general_fmt)
             ws_conc.set_column('C:C', 15, general_fmt)
@@ -685,7 +703,6 @@ if st.button("Generate Dashboard"):
                     ws_conc.write(row_idx, 4, s_name, data_white)
                     row_idx += 1
 
-            # Final Conc After Repeat Matrix
             if repeat_files:
                 ws_rep = workbook.add_worksheet("Final Conc After Repeat")
                 ws_rep.set_column('A:B', 15, general_fmt)
