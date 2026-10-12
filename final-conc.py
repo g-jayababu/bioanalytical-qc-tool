@@ -395,16 +395,21 @@ if st.button("Generate Final Concentration Tracker"):
                     tmax_time = tmax_row['Timepoint_Float']
                     
                     # 1. Cmax Selection Phase
+                    # EXCLUDE true Cmax from candidates
+                    cmax_pool = valid_group.drop(index=tmax_idx)
+                    
                     # Prioritize samples strictly < 95% of ULOQ
                     limit_95_uloq = 0.95 * uloq if pd.notna(uloq) else float('inf')
-                    cmax_cands = valid_group[valid_group['Final Conc'] < limit_95_uloq].sort_values(by='Final Conc', ascending=False)
+                    cmax_cands = cmax_pool[cmax_pool['Final Conc'] < limit_95_uloq].sort_values(by='Final Conc', ascending=False)
                     
                     # Fallback if no samples < 95% exist
                     if len(cmax_cands) < isr_cmax_count:
-                        cmax_cands = valid_group.sort_values(by='Final Conc', ascending=False)
+                        cmax_cands = cmax_pool.sort_values(by='Final Conc', ascending=False)
                         
                     selected_cmax = cmax_cands.head(isr_cmax_count)
                     selected_indices = list(selected_cmax.index)
+                    # Add true Cmax index to selected indices so it isn't grabbed in elimination
+                    selected_indices.append(tmax_idx) 
                     
                     # 2. Elimination Selection Phase
                     elim_pool = valid_group[(valid_group['Timepoint_Float'] > tmax_time) & (~valid_group.index.isin(selected_indices))]
