@@ -7,18 +7,14 @@ import re
 st.set_page_config(layout="wide")
 st.title("Simple Concentration & Repeat Tracker")
 
-st.header("1. Study Parameters")
-col_a, col_b, col_c = st.columns(3)
+st.header("1. Upload Setup & Parameters")
+col_a, col_b = st.columns(2)
 with col_a:
-    study_num = st.text_input("Study Number", value="")
-    mol_name = st.text_input("Molecule Name", value="")
+    setup_file = st.file_uploader("Upload Setup Excel File", type=["xls", "xlsx", "xlsm"])
 with col_b:
-    lloq = st.number_input("LLOQ Value", value=0.000, format="%.3f")
-    uloq = st.number_input("ULOQ Value", value=100.000, format="%.3f")
-with col_c:
-    unit = st.selectbox("Select Units", ["ng/mL", "pg/mL", "µg/mL"])
+    unit = st.selectbox("Select Concentration Units", ["ng/mL", "pg/mL", "µg/mL"])
 
-st.header("2. Upload Files")
+st.header("2. Upload TSQ Files")
 col1, col2 = st.columns(2)
 with col1:
     uploaded_files = st.file_uploader("Upload Main TSQ Export Files", type=["csv", "xls", "xlsx"], accept_multiple_files=True)
@@ -61,11 +57,31 @@ def get_base_name(name):
     return re.sub(r'[-_](ISR\d*|R\d*|REPEAT\d*)$', '', name, flags=re.IGNORECASE).strip()
 
 if st.button("Generate Final Concentration Tracker"):
-    if not mol_name or not study_num:
-        st.warning("Please enter the Study Number and Molecule Name before generating.")
+    if not setup_file:
+        st.warning("Please upload the Setup Excel File before generating.")
     elif uploaded_files:
         st.success("Files received! Processing concentration data...")
         
+        # Parse Setup File Data
+        try:
+            setup_df = pd.read_excel(setup_file, header=None, engine='openpyxl')
+            mol_name = str(setup_df.iloc[0, 1]).strip()
+            study_num = str(setup_df.iloc[1, 1]).strip()
+            num_subj_raw = setup_df.iloc[2, 1]
+            num_subj = int(pd.to_numeric(num_subj_raw, errors='coerce')) if pd.notna(num_subj_raw) else 0
+            
+            periods_str = str(setup_df.iloc[3, 1]).strip() if pd.notna(setup_df.iloc[3, 1]) else ""
+            timepoints_str = str(setup_df.iloc[4, 1]).strip() if pd.notna(setup_df.iloc[4, 1]) else ""
+            
+            periods_list = [p.strip() for p in periods_str.split(',')] if periods_str else []
+            timepoints_list = [tp.strip() for tp in timepoints_str.split(',')] if timepoints_str else []
+            
+            lloq = pd.to_numeric(setup_df.iloc[5, 1], errors='coerce')
+            uloq = pd.to_numeric(setup_df.iloc[6, 1], errors='coerce')
+        except Exception as e:
+            st.error(f"Failed to read Setup file. Please ensure it follows the standard format. Error: {str(e)}")
+            st.stop()
+            
         initial_samples = {}
         repeat_samples = {}
         
@@ -123,6 +139,41 @@ if st.button("Generate Final Concentration Tracker"):
                     elif file_category == "Repeat":
                         repeat_samples[base_up] = (conc, raw_conc_val, s_name_raw)
 
+        # --- PREPARE MAPPED SAMPLES FOR MATRIX ---
+        mapped_initial = {}
+        for base_up, (conc, raw_conc_val, s_name_raw) in initial_samples.items():
+            parts = re.split(r'[-_]', s_name_raw)
+            subj_str = parts[0] if len(parts) > 0 else s_name_raw
+            period_str = parts[1] if len(parts) > 1 else ""
+            tp_str = parts[2] if len(parts) > 2 else ""
+
+            s_nums = re.findall(r'\d+', subj_str)
+            subj_int = int(s_nums[-1]) if s_nums else 0
+            period_clean = period_str.strip().upper()
+
+            tp_nums = re.findall(r'\d+\.\d+|\d+', tp_str)
+            tp_float = float(tp_nums[0]) if tp_nums else -1.0
+            if "PRE" in tp_str.upper(): tp_float = -1.0
+
+            mapped_initial[(subj_int, period_clean, tp_float)] = (conc, raw_conc_val, s_name_raw)
+            
+        mapped_repeat = {}
+        for base_up, (conc, raw_conc_val, s_name_raw) in repeat_samples.items():
+            parts = re.split(r'[-_]', s_name_raw)
+            subj_str = parts[0] if len(parts) > 0 else s_name_raw
+            period_str = parts[1] if len(parts) > 1 else ""
+            tp_str = parts[2] if len(parts) > 2 else ""
+
+            s_nums = re.findall(r'\d+', subj_str)
+            subj_int = int(s_nums[-1]) if s_nums else 0
+            period_clean = period_str.strip().upper()
+
+            tp_nums = re.findall(r'\d+\.\d+|\d+', tp_str)
+            tp_float = float(tp_nums[0]) if tp_nums else -1.0
+            if "PRE" in tp_str.upper(): tp_float = -1.0
+
+            mapped_repeat[(subj_int, period_clean, tp_float)] = (conc, raw_conc_val, s_name_raw)
+
         # --- EXPORT TO EXCEL ---
         output = io.BytesIO()
         with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
@@ -163,16 +214,16 @@ if st.button("Generate Final Concentration Tracker"):
             for col_num, header in enumerate(rep_headers): 
                 ws_rep.write(4, col_num, header, table_header_green)
             
-            # Sort initial samples alphanumerically by their raw sample name
-            sorted_samples = sorted(initial_samples.items(), key=lambda x: natural_sort_key(x[1][2]))
-            
-            # Helper to map display values with 0.000 Logic
+            # Helper to map display values with 0.000 / Missing Logic
             def get_display_val(conc_val, raw_str, current_lloq):
                 raw_clean = str(raw_str).strip()
                 
+                if raw_clean.upper() == "M":
+                    return "M", True
+                
                 # Manual overrides for < 0
                 if raw_clean in ["< 0", "<0"]:
-                    return 0.0, False  # Returns numeric 0, is_string=False
+                    return 0.0, False  # Returns numeric 0
                     
                 # Numeric evaluations against LLOQ
                 if pd.notna(conc_val) and isinstance(conc_val, (int, float)):
@@ -188,72 +239,142 @@ if st.button("Generate Final Concentration Tracker"):
                 return raw_clean, True
             
             row_idx = 5
-            for base_up, (initial_conc, init_raw_str, init_s_name) in sorted_samples:
-                
-                # Parse Subject, Period, Timepoint from Sample Name if possible
-                parts = re.split(r'[-_]', init_s_name)
-                subj = parts[0] if len(parts) > 0 else init_s_name
-                period = parts[1] if len(parts) > 1 else ""
-                timep = parts[2] if len(parts) > 2 else ""
-                if subj.startswith('S') and subj[1:].isdigit(): 
-                    subj = f"S{int(subj[1:]):03d}"
-                    
-                # Apply strictly 00.00 formatting without ' or hrs
-                timep_display = ""
-                if timep:
-                    if "PRE" in timep.upper():
-                        timep_display = "PRE"
-                    else:
-                        t_nums = re.findall(r'\d+\.\d+|\d+', timep)
-                        if t_nums:
-                            timep_display = f"{float(t_nums[0]):05.2f}"
+            
+            # EXHAUSTIVE MATRIX BASED ON SETUP FILE
+            if num_subj > 0 and periods_list and timepoints_list:
+                for subj_idx in range(1, num_subj + 1):
+                    subj_formatted = f"S{subj_idx:03d}"
+                    for period_val in periods_list:
+                        period_clean = period_val.strip().upper()
+                        for tp_val in timepoints_list:
+                            
+                            # Standardize timepoint for exact lookup mapping
+                            tp_nums = re.findall(r'\d+\.\d+|\d+', str(tp_val))
+                            tp_float = float(tp_nums[0]) if tp_nums else -1.0
+                            if "PRE" in str(tp_val).upper(): tp_float = -1.0
+                            
+                            # Format for visual output display
+                            timep_display = ""
+                            if "PRE" in str(tp_val).upper():
+                                timep_display = "PRE"
+                            elif tp_nums:
+                                timep_display = f"{float(tp_nums[0]):05.2f}"
+                            else:
+                                timep_display = str(tp_val)
+                                
+                            lookup_key = (subj_idx, period_clean, tp_float)
+                            
+                            # Locate Initial Sample
+                            if lookup_key in mapped_initial:
+                                initial_conc, init_raw_str, init_s_name = mapped_initial[lookup_key]
+                            else:
+                                initial_conc, init_raw_str, init_s_name = np.nan, "M", "Missing"
+                                
+                            # Locate Repeat Sample
+                            if lookup_key in mapped_repeat:
+                                repeat_conc, rep_raw_str, rep_s_name = mapped_repeat[lookup_key]
+                                has_repeat = True
+                            else:
+                                repeat_conc, rep_raw_str, rep_s_name = np.nan, "", ""
+                                has_repeat = False
+
+                            # Process which value becomes the 'Final' value
+                            if has_repeat:
+                                final_conc = repeat_conc
+                                final_raw_str = rep_raw_str
+                                final_s_name = rep_s_name
+                            else:
+                                final_conc = initial_conc
+                                final_raw_str = init_raw_str
+                                final_s_name = init_s_name
+
+                            # Formatting values through the logic gate
+                            c_final_out, is_final_str = get_display_val(final_conc, final_raw_str, lloq)
+                            c_final_fmt = data_white if is_final_str else data_white_float
+                                
+                            c_init_out, is_init_str = get_display_val(initial_conc, init_raw_str, lloq)
+                            c_init_fmt = data_white if is_init_str else data_white_float
+
+                            # Calculate % Difference (Suppressed if text/missing or 0.0)
+                            pct_diff = ""
+                            if has_repeat and not is_init_str and not is_final_str and isinstance(c_init_out, (int, float)) and c_init_out > 0:
+                                pct_diff = ((c_final_out - c_init_out) / ((c_init_out + c_final_out) / 2)) * 100
+
+                            # Write Row directly to matrix
+                            ws_rep.write(row_idx, 0, subj_formatted, data_white)
+                            ws_rep.write(row_idx, 1, period_val, data_white)
+                            ws_rep.write_string(row_idx, 2, timep_display, data_white) 
+                            ws_rep.write(row_idx, 3, c_final_out, c_final_fmt)
+                            ws_rep.write(row_idx, 4, final_s_name, data_white)
+                            
+                            if has_repeat:
+                                ws_rep.write(row_idx, 5, c_init_out, c_init_fmt)
+                                ws_rep.write(row_idx, 6, pct_diff, data_white_pct if pct_diff != "" else data_white)
+                            else:
+                                ws_rep.write(row_idx, 5, "", data_white)
+                                ws_rep.write(row_idx, 6, "", data_white)
+                                
+                            row_idx += 1
+            else:
+                # Fallback to Unstructured Output if Setup format failed
+                sorted_samples = sorted(initial_samples.items(), key=lambda x: natural_sort_key(x[1][2]))
+                for base_up, (initial_conc, init_raw_str, init_s_name) in sorted_samples:
+                    parts = re.split(r'[-_]', init_s_name)
+                    subj = parts[0] if len(parts) > 0 else init_s_name
+                    period = parts[1] if len(parts) > 1 else ""
+                    timep = parts[2] if len(parts) > 2 else ""
+                    if subj.startswith('S') and subj[1:].isdigit(): 
+                        subj = f"S{int(subj[1:]):03d}"
+                        
+                    timep_display = ""
+                    if timep:
+                        if "PRE" in timep.upper():
+                            timep_display = "PRE"
                         else:
-                            timep_display = f"{timep}"
-                
-                # Check for Repeat
-                repeat_tuple = repeat_samples.get(base_up)
-                has_repeat = repeat_tuple is not None
-                
-                if has_repeat:
-                    repeat_conc, rep_raw_str, rep_s_name = repeat_tuple
-                    final_conc = repeat_conc
-                    final_raw_str = rep_raw_str
-                    final_s_name = rep_s_name
-                else:
-                    repeat_conc = np.nan
-                    final_conc = initial_conc
-                    final_raw_str = init_raw_str
-                    final_s_name = init_s_name
-
-                # Process Final Conc Output
-                c_final_out, is_final_str = get_display_val(final_conc, final_raw_str, lloq)
-                c_final_fmt = data_white if is_final_str else data_white_float
+                            t_nums = re.findall(r'\d+\.\d+|\d+', timep)
+                            if t_nums:
+                                timep_display = f"{float(t_nums[0]):05.2f}"
+                            else:
+                                timep_display = f"{timep}"
                     
-                # Process Initial Conc Output
-                c_init_out, is_init_str = get_display_val(initial_conc, init_raw_str, lloq)
-                c_init_fmt = data_white if is_init_str else data_white_float
-
-                # Calculate % Difference (Suppressed if values are 0.0)
-                pct_diff = ""
-                if has_repeat and not is_init_str and not is_final_str and c_init_out > 0:
-                    pct_diff = ((c_final_out - c_init_out) / ((c_init_out + c_final_out) / 2)) * 100
-
-                # Write Row
-                ws_rep.write(row_idx, 0, subj, data_white)
-                ws_rep.write(row_idx, 1, period, data_white)
-                # Using write_string prevents Excel from automatically stripping the leading 0 in 01.00
-                ws_rep.write_string(row_idx, 2, timep_display, data_white) 
-                ws_rep.write(row_idx, 3, c_final_out, c_final_fmt)
-                ws_rep.write(row_idx, 4, final_s_name, data_white)
-                
-                if has_repeat:
-                    ws_rep.write(row_idx, 5, c_init_out, c_init_fmt)
-                    ws_rep.write(row_idx, 6, pct_diff, data_white_pct if pct_diff != "" else data_white)
-                else:
-                    ws_rep.write(row_idx, 5, "", data_white)
-                    ws_rep.write(row_idx, 6, "", data_white)
+                    repeat_tuple = repeat_samples.get(base_up)
+                    has_repeat = repeat_tuple is not None
                     
-                row_idx += 1
+                    if has_repeat:
+                        repeat_conc, rep_raw_str, rep_s_name = repeat_tuple
+                        final_conc = repeat_conc
+                        final_raw_str = rep_raw_str
+                        final_s_name = rep_s_name
+                    else:
+                        repeat_conc = np.nan
+                        final_conc = initial_conc
+                        final_raw_str = init_raw_str
+                        final_s_name = init_s_name
+
+                    c_final_out, is_final_str = get_display_val(final_conc, final_raw_str, lloq)
+                    c_final_fmt = data_white if is_final_str else data_white_float
+                        
+                    c_init_out, is_init_str = get_display_val(initial_conc, init_raw_str, lloq)
+                    c_init_fmt = data_white if is_init_str else data_white_float
+
+                    pct_diff = ""
+                    if has_repeat and not is_init_str and not is_final_str and isinstance(c_init_out, (int, float)) and c_init_out > 0:
+                        pct_diff = ((c_final_out - c_init_out) / ((c_init_out + c_final_out) / 2)) * 100
+
+                    ws_rep.write(row_idx, 0, subj, data_white)
+                    ws_rep.write(row_idx, 1, period, data_white)
+                    ws_rep.write_string(row_idx, 2, timep_display, data_white) 
+                    ws_rep.write(row_idx, 3, c_final_out, c_final_fmt)
+                    ws_rep.write(row_idx, 4, final_s_name, data_white)
+                    
+                    if has_repeat:
+                        ws_rep.write(row_idx, 5, c_init_out, c_init_fmt)
+                        ws_rep.write(row_idx, 6, pct_diff, data_white_pct if pct_diff != "" else data_white)
+                    else:
+                        ws_rep.write(row_idx, 5, "", data_white)
+                        ws_rep.write(row_idx, 6, "", data_white)
+                        
+                    row_idx += 1
 
         st.download_button(
             label="Download Final Concentration Tracker",
@@ -262,4 +383,4 @@ if st.button("Generate Final Concentration Tracker"):
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
         )
     else:
-        st.error("Please upload at least one Main TSQ Export file.")
+        st.error("Please upload BOTH the Setup file and the Main TSQ Export file(s).")
