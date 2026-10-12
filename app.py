@@ -83,9 +83,15 @@ if st.button("Generate Dashboard"):
         global_samples = {}
         batch_meta_data = {}
         all_repeats_data = [] 
+        repeat_samples = {}
         
-        # --- 1. PARSE MAIN EXPORT FILES ---
-        for file in uploaded_files:
+        # Combine uploaded_files and repeat_files for universal parsing
+        combined_files = [(f, False) for f in uploaded_files]
+        if repeat_files:
+            combined_files.extend([(f, True) for f in repeat_files])
+        
+        # --- 1. PARSE ALL EXPORT FILES (Main & Repeats) ---
+        for file, is_repeat in combined_files:
             file.seek(0)
             safe_sheet_name = re.sub(r'[\\/*?:\[\]]', '_', file.name)[:31]
             
@@ -238,10 +244,28 @@ if st.button("Generate Dashboard"):
                     sample_rows.append(row_dict)
                     sample_chart.append(tuple(chart_tuple))
                     if 'UNKNOWN' in s_type and 'AQSTD' not in s_name and 'BLK' not in s_name and '+IS' not in s_name and 'BLANK' not in s_name:
-                        if s_name in seen_samples: file_sample_dupes.append(s_name)
+                        if s_name in seen_samples: 
+                            file_sample_dupes.append(s_name)
                         else:
                             seen_samples.add(s_name)
-                            global_samples[s_name] = conc
+                            if not is_repeat:
+                                global_samples[s_name] = conc
+                            else:
+                                if 'STD' not in s_name and 'QC' not in s_name:
+                                    parts = re.split(r'[-_]', s_name)
+                                    subj_str = parts[0] if len(parts) > 0 else s_name
+                                    period_str = parts[1] if len(parts) > 1 else ""
+                                    tp_str = parts[2] if len(parts) > 2 else ""
+                                    
+                                    subj_nums = re.findall(r'\d+', subj_str)
+                                    subj_int = int(subj_nums[-1]) if subj_nums else 0
+                                    period_clean = period_str.strip().upper()
+                                    
+                                    tp_nums = re.findall(r'\d+\.\d+|\d+', tp_str)
+                                    tp_float = float(tp_nums[0]) if tp_nums else -1.0
+                                    if "PRE" in tp_str.upper(): tp_float = -1.0
+                                    
+                                    repeat_samples[(subj_int, period_clean, tp_float)] = (conc, s_name)
                             
                 current_inj += 1
                 
@@ -260,10 +284,12 @@ if st.button("Generate Dashboard"):
             file_cc_dict['r'] = "" if pd.isna(r_val) else r_val
             cc_file_data.append(file_cc_dict)
             
-            for smp in out_of_range_is:
-                all_repeats_data.append({"Batch Name": safe_sheet_name, "Sample Name": smp['name'], "Concentration": smp['conc'], "Reason Code": "Out of Range %IS"})
-            for smp in above_uloq:
-                all_repeats_data.append({"Batch Name": safe_sheet_name, "Sample Name": smp['name'], "Concentration": smp['conc'], "Reason Code": "Above ULOQ"})
+            # Ensure Repeat Files do not trigger new repeat entries in the Tracker
+            if not is_repeat:
+                for smp in out_of_range_is:
+                    all_repeats_data.append({"Batch Name": safe_sheet_name, "Sample Name": smp['name'], "Concentration": smp['conc'], "Reason Code": "Out of Range %IS"})
+                for smp in above_uloq:
+                    all_repeats_data.append({"Batch Name": safe_sheet_name, "Sample Name": smp['name'], "Concentration": smp['conc'], "Reason Code": "Above ULOQ"})
             
             for i in range(4):
                 q_dict = {
@@ -296,56 +322,6 @@ if st.button("Generate Dashboard"):
                 "File Name": file.name, "Status": "SUCCESS", "Error Details": "Dashboard generated.",
                 "Nominal Conc. Check": nom_check_msg, "Duplicate CC & QC ID Check": dup_ccqc_msg, "Duplicate Sample Name Check": dup_samp_msg
             })
-
-        # --- 2. PARSE REPEAT FILES ---
-        repeat_samples = {}
-        if repeat_files:
-            for file in repeat_files:
-                file.seek(0)
-                df_rep, _ = load_data(file)
-                if df_rep is None: continue
-                
-                df_rep = df_rep.dropna(how='all').dropna(how='all', axis=1).reset_index(drop=True)
-                header_idx = None
-                for idx, row in df_rep.iterrows():
-                    row_string = str(row.values).lower()
-                    if 'sample name' in row_string or ('sample' in row_string and 'type' in row_string):
-                        header_idx = idx
-                        break
-                        
-                if header_idx is not None:
-                    new_headers = df_rep.iloc[header_idx]
-                    df_rep = df_rep.iloc[header_idx + 1:].copy()
-                    df_rep.columns = [str(c).lower().strip() for c in new_headers]
-                else:
-                    df_rep.columns = [str(c).lower().strip() for c in df_rep.columns]
-
-                df_rep = df_rep.loc[:, ~df_rep.columns.str.contains('^nan$', case=False, na=False)]
-                name_col = next((c for c in df_rep.columns if 'sample name' in c or 'sample' in c), None)
-                conc_col = next((c for c in df_rep.columns if 'calc' in c and 'conc' in c), None)
-                
-                if not name_col or not conc_col: continue
-                
-                for index, row in df_rep.iterrows():
-                    s_name = str(row[name_col]).strip().upper()
-                    conc = pd.to_numeric(row[conc_col], errors='coerce')
-                    
-                    if 'AQSTD' not in s_name and 'BLK' not in s_name and '+IS' not in s_name and 'BLANK' not in s_name and 'STD' not in s_name and 'QC' not in s_name:
-                        parts = re.split(r'[-_]', s_name)
-                        subj_str = parts[0] if len(parts) > 0 else s_name
-                        period_str = parts[1] if len(parts) > 1 else ""
-                        tp_str = parts[2] if len(parts) > 2 else ""
-                        
-                        subj_nums = re.findall(r'\d+', subj_str)
-                        subj_int = int(subj_nums[-1]) if subj_nums else 0
-                        period_clean = period_str.strip().upper()
-                        
-                        tp_nums = re.findall(r'\d+\.\d+|\d+', tp_str)
-                        tp_float = float(tp_nums[0]) if tp_nums else -1.0
-                        if "PRE" in tp_str.upper(): tp_float = -1.0
-                        
-                        # Store by universal coordinates to handle suffix differences (like _R)
-                        repeat_samples[(subj_int, period_clean, tp_float)] = (conc, s_name)
 
         excel_tabs["Summary"] = pd.DataFrame(summary_log)
         
@@ -389,7 +365,7 @@ if st.button("Generate Dashboard"):
             qc_df = pd.concat([pd.DataFrame([row_nom_qc, row_low_qc, row_up_qc]), qc_df_data], ignore_index=True)
             excel_tabs["QC"] = qc_df[qc_columns]
 
-        # --- 3. EXPORT WRITER ---
+        # --- 2. EXPORT WRITER ---
         output = io.BytesIO()
         with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
             
@@ -405,14 +381,17 @@ if st.button("Generate Dashboard"):
             green_sheet_bg = workbook.add_format({**tnr, 'bg_color': '#CDE4CE'})
             header_format = workbook.add_format({**tnr, 'bold': True, 'bg_color': '#C6E0B4', 'border': 1, 'align': 'center', 'valign': 'vcenter'})
             yellow_flag = workbook.add_format({**tnr, 'bg_color': '#FFFF00', 'bold': True, 'font_color': '#FF0000'})
-            bold_label = workbook.add_format({**tnr, 'bold': True, 'align': 'right'})
+            
+            # Formats adjusted to include borders for bottom stats and merges
+            bold_label = workbook.add_format({**tnr, 'bold': True, 'align': 'right', 'border': 1})
             general_fmt = workbook.add_format({**tnr, 'align': 'center', 'valign': 'vcenter'})
             conc_fmt = workbook.add_format({**tnr, 'num_format': '0.000', 'align': 'center', 'valign': 'vcenter'})
             r_fmt = workbook.add_format({**tnr, 'num_format': '0.0000', 'align': 'center', 'valign': 'vcenter'})
-            float_fmt = workbook.add_format({**tnr, 'num_format': '0.000', 'align': 'center', 'valign': 'vcenter'})
-            stdev_fmt = workbook.add_format({**tnr, 'num_format': '0.0000', 'align': 'center', 'valign': 'vcenter'})
-            pct_fmt = workbook.add_format({**tnr, 'num_format': '0.00', 'align': 'center', 'valign': 'vcenter'})
-            merge_fmt = workbook.add_format({**tnr, 'align': 'center', 'valign': 'vcenter'})
+            float_fmt = workbook.add_format({**tnr, 'num_format': '0.000', 'align': 'center', 'valign': 'vcenter', 'border': 1})
+            stdev_fmt = workbook.add_format({**tnr, 'num_format': '0.0000', 'align': 'center', 'valign': 'vcenter', 'border': 1})
+            pct_fmt = workbook.add_format({**tnr, 'num_format': '0.00', 'align': 'center', 'valign': 'vcenter', 'border': 1})
+            merge_fmt = workbook.add_format({**tnr, 'align': 'center', 'valign': 'vcenter', 'border': 1})
+            
             success_fmt = workbook.add_format({**tnr, 'bg_color': '#99FF99', 'align': 'center', 'valign': 'vcenter'})
             failed_fmt = workbook.add_format({**tnr, 'bg_color': '#FF9999', 'align': 'center', 'valign': 'vcenter'})
             
@@ -582,6 +561,7 @@ if st.button("Generate Dashboard"):
                         ws.write(or_start + 1 + i, 8, smp['name'], data_white)
                         ws.write(or_start + 1 + i, 9, smp['conc'], data_yellow_float)
 
+            # --- APPLY BORDERS AND STATS TO CC AND QC TABS ---
             for target_sheet in ["CC", "QC"]:
                 if target_sheet in excel_tabs:
                     ws = writer.sheets[target_sheet]
@@ -589,6 +569,14 @@ if st.button("Generate Dashboard"):
                     num_rows = len(df_target)
                     stat_row = num_rows + 1 
                     
+                    # Manually overwrite the dataframe rendering to enforce borders
+                    for r in range(1, num_rows + 1):
+                        for c in range(len(df_target.columns)):
+                            val = df_target.iloc[r-1, c]
+                            fmt = data_white_float if isinstance(val, (int, float)) else data_white
+                            ws.write(r, c, "" if pd.isna(val) else val, fmt)
+                    
+                    # Apply merges for headers
                     ws.merge_range(0, 0, 3, 0, df_target.columns[0], header_format)
                     ws.merge_range(0, 1, 3, 1, df_target.columns[1], header_format)
                     
