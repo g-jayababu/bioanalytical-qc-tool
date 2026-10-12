@@ -153,6 +153,18 @@ if st.button("Generate Final Concentration Tracker"):
                 timep = parts[2] if len(parts) > 2 else ""
                 if subj.startswith('S') and subj[1:].isdigit(): 
                     subj = f"S{int(subj[1:]):03d}"
+                    
+                # Apply 00.00 hrs padding to timepoints
+                timep_display = ""
+                if timep:
+                    if "PRE" in timep.upper():
+                        timep_display = "'PRE"
+                    else:
+                        t_nums = re.findall(r'\d+\.\d+|\d+', timep)
+                        if t_nums:
+                            timep_display = f"'{float(t_nums[0]):05.2f} hrs"
+                        else:
+                            timep_display = f"'{timep}"
                 
                 # Check for Repeat
                 repeat_tuple = repeat_samples.get(base_up)
@@ -193,7 +205,7 @@ if st.button("Generate Final Concentration Tracker"):
                 # Write Row
                 ws_rep.write(row_idx, 0, subj, data_white)
                 ws_rep.write(row_idx, 1, period, data_white)
-                ws_rep.write(row_idx, 2, f"'{timep}" if timep else "", data_white)
+                ws_rep.write(row_idx, 2, timep_display, data_white)
                 ws_rep.write(row_idx, 3, c_final_out, c_final_fmt)
                 ws_rep.write(row_idx, 4, final_s_name, data_white)
                 
@@ -213,4 +225,4 @@ if st.button("Generate Final Concentration Tracker"):
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
         )
     else:
-        st.error("Please upload at least one Main TSQ Export file.")
+        st.error("Please upload at least Export file.")
