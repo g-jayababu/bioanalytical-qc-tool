@@ -166,9 +166,9 @@ if st.button("Generate Dashboard"):
             elif 'ISR' in file.name.upper(): subj_id = "ISR"
                 
             ccid_str = "CC-01"
-            for s_name in df[name_col]:
-                if 'CC-' in str(s_name).upper():
-                    cc_match = re.search(r'CC-\d+', str(s_name).upper())
+            for s_name_raw in df[name_col]:
+                if 'CC-' in str(s_name_raw).upper():
+                    cc_match = re.search(r'CC-\d+', str(s_name_raw).upper())
                     if cc_match:
                         ccid_str = cc_match.group(0)
                         break
@@ -205,8 +205,10 @@ if st.button("Generate Dashboard"):
             ccqc_chart.append((np.nan, np.nan, np.nan, np.nan, np.nan))
             
             for index, row in df.iterrows():
-                s_name = str(row[name_col]).strip().upper()
-                s_type = str(row[type_col]).strip().upper()
+                # Preserve raw string formatting exactly as it comes from the machine
+                s_name_raw = str(row[name_col]).strip()
+                s_name_up = s_name_raw.upper()
+                s_type_up = str(row[type_col]).strip().upper()
                 
                 raw_conc_val = str(row[conc_col]).strip() if conc_col else ""
                 conc = pd.to_numeric(raw_conc_val, errors='coerce') if raw_conc_val != "" else np.nan
@@ -220,50 +222,51 @@ if st.button("Generate Dashboard"):
                 raw_acc_val = str(row[acc_col]).strip() if acc_col else ""
                 acc_val = pd.to_numeric(raw_acc_val, errors='coerce') if raw_acc_val != "" else np.nan
                 
-                # Flag if a CC or QC failed ICH M10 bounds dynamically
                 failed_ccqc = False
-                if 'STANDARD' in s_type or 'QC' in s_type or 'QUALITY' in s_type:
+                if 'STANDARD' in s_type_up or 'QC' in s_type_up or 'QUALITY' in s_type_up:
                     if pd.notna(acc_val):
-                        if ('STANDARD' in s_type or 'STD' in s_name) and ('-A' in s_name or '-1' in s_name):
+                        # LLOQ Standard limits: 80 - 120%
+                        if ('STANDARD' in s_type_up or 'STD' in s_name_up) and ('-A' in s_name_up or '-1' in s_name_up):
                             if not (80 <= acc_val <= 120): failed_ccqc = True
                         else:
+                            # ALL other Standards and QCs limits: 85 - 115%
                             if not (85 <= acc_val <= 115): failed_ccqc = True
                     else:
                         failed_ccqc = True
                 
-                if ('STD-A' in s_name or '-1' in s_name) and std_a_area is None: std_a_area = a_area
-                if ('ZERO' in s_name or 'AQSTD' in s_name or '+IS' in s_name) and std_zero_is_area is None: std_zero_is_area = s_is_area
-                if 'BLANK' in s_type or 'BLK' in s_name or 'MOBILE' in s_name: carryover_samples.append({'name': s_name, 'a_area': a_area, 'is_area': s_is_area})
+                if ('STD-A' in s_name_up or '-1' in s_name_up) and std_a_area is None: std_a_area = a_area
+                if ('ZERO' in s_name_up or 'AQSTD' in s_name_up or '+IS' in s_name_up) and std_zero_is_area is None: std_zero_is_area = s_is_area
+                if 'BLANK' in s_type_up or 'BLK' in s_name_up or 'MOBILE' in s_name_up: carryover_samples.append({'name': s_name_raw, 'a_area': a_area, 'is_area': s_is_area})
                 
                 if pd.notna(acc_val):
-                    if 'STANDARD' in s_type or 'STD' in s_name:
-                        if ('-A' in s_name or '-1' in s_name) and 80 <= acc_val <= 120: cc_pass += 1
-                        elif ('-A' not in s_name and '-1' not in s_name) and 85 <= acc_val <= 115: cc_pass += 1
-                    if 'LQC' in s_name and 85 <= acc_val <= 115: lqc_pass += 1
-                    if 'MMQC' in s_name and 85 <= acc_val <= 115: mmqc_pass += 1
-                    if 'MQC' in s_name and 'MMQC' not in s_name and 85 <= acc_val <= 115: mqc_pass += 1
-                    if 'HQC' in s_name and 85 <= acc_val <= 115: hqc_pass += 1
+                    if 'STANDARD' in s_type_up or 'STD' in s_name_up:
+                        if ('-A' in s_name_up or '-1' in s_name_up) and 80 <= acc_val <= 120: cc_pass += 1
+                        elif ('-A' not in s_name_up and '-1' not in s_name_up) and 85 <= acc_val <= 115: cc_pass += 1
+                    if 'LQC' in s_name_up and 85 <= acc_val <= 115: lqc_pass += 1
+                    if 'MMQC' in s_name_up and 85 <= acc_val <= 115: mmqc_pass += 1
+                    if 'MQC' in s_name_up and 'MMQC' not in s_name_up and 85 <= acc_val <= 115: mqc_pass += 1
+                    if 'HQC' in s_name_up and 85 <= acc_val <= 115: hqc_pass += 1
                 
-                if pd.notna(s_is_area) and ('STANDARD' in s_type or 'QC' in s_type or 'UNKNOWN' in s_type):
+                if pd.notna(s_is_area) and ('STANDARD' in s_type_up or 'QC' in s_type_up or 'UNKNOWN' in s_type_up):
                     if s_is_area < lower_is_limit or s_is_area > upper_is_limit:
-                        if 'BLK' not in s_name and 'AQSTD' not in s_name: out_of_range_is.append({'name': s_name, 'conc': conc})
-                if 'UNKNOWN' in s_type and pd.notna(conc) and conc > uloq:
-                    above_uloq.append({'name': s_name, 'conc': conc})
+                        if 'BLK' not in s_name_up and 'AQSTD' not in s_name_up: out_of_range_is.append({'name': s_name_raw, 'conc': conc})
+                if 'UNKNOWN' in s_type_up and pd.notna(conc) and conc > uloq:
+                    above_uloq.append({'name': s_name_raw, 'conc': conc})
 
                 chart_tuple = [current_inj, np.nan, np.nan, np.nan, np.nan]
                 pct_diff = np.nan
                 
                 if pd.notna(s_is_area) and pd.notna(avg_is_area) and avg_is_area > 0:
                     pct_diff = (s_is_area / avg_is_area) * 100 - 100
-                    if 'STANDARD' in s_type or 'QC' in s_type or 'QUALITY' in s_type: chart_tuple[1] = pct_diff
-                    elif 'BLANK' in s_type or '-BLK' in s_name or '+IS' in s_name: chart_tuple[2] = pct_diff
+                    if 'STANDARD' in s_type_up or 'QC' in s_type_up or 'QUALITY' in s_type_up: chart_tuple[1] = pct_diff
+                    elif 'BLANK' in s_type_up or '-BLK' in s_name_up or '+IS' in s_name_up: chart_tuple[2] = pct_diff
                     else: chart_tuple[3] = pct_diff
                 
-                if 'UNKNOWN' in s_type and 'AQSTD' not in s_name and 'BLK' not in s_name and '+IS' not in s_name and 'BLANK' not in s_name:
+                if 'UNKNOWN' in s_type_up and 'AQSTD' not in s_name_up and 'BLK' not in s_name_up and '+IS' not in s_name_up and 'BLANK' not in s_name_up:
                     chart_tuple[4] = conc
 
                 row_dict = {
-                    "Sample Name": s_name, 
+                    "Sample Name": s_name_raw, 
                     "Area": a_area, 
                     "Raw.Area": raw_a_area_val,
                     "IS area": s_is_area, 
@@ -273,40 +276,40 @@ if st.button("Generate Dashboard"):
                     "failed_ccqc": failed_ccqc
                 }
                 
-                if 'STANDARD' in s_type or 'QC' in s_type or 'QUALITY' in s_type:
+                if 'STANDARD' in s_type_up or 'QC' in s_type_up or 'QUALITY' in s_type_up:
                     row_dict["% Accuracy"] = acc_val
                     ccqc_rows.append(row_dict)
                     ccqc_chart.append(tuple(chart_tuple))
-                    if s_name in seen_ccqc: file_dupes.append(s_name)
-                    else: seen_ccqc.add(s_name)
+                    if s_name_up in seen_ccqc: file_dupes.append(s_name_raw)
+                    else: seen_ccqc.add(s_name_up)
                 else:
                     row_dict["% Accuracy"] = pct_diff 
                     sample_rows.append(row_dict)
                     sample_chart.append(tuple(chart_tuple))
-                    if 'UNKNOWN' in s_type and 'AQSTD' not in s_name and 'BLK' not in s_name and '+IS' not in s_name and 'BLANK' not in s_name:
-                        if s_name in seen_samples: 
-                            file_sample_dupes.append(s_name)
+                    if 'UNKNOWN' in s_type_up and 'AQSTD' not in s_name_up and 'BLK' not in s_name_up and '+IS' not in s_name_up and 'BLANK' not in s_name_up:
+                        if s_name_up in seen_samples: 
+                            file_sample_dupes.append(s_name_raw)
                         else:
-                            seen_samples.add(s_name)
-                            # Direct string storage - Base matching resolves repeats and ISRs below
+                            seen_samples.add(s_name_up)
+                            # Direct storage of Exact string. Base mapping matches them below.
                             if file_category == "Main":
-                                global_samples[s_name] = (conc, safe_sheet_name)
+                                global_samples[s_name_raw] = (conc, safe_sheet_name)
                             elif file_category == "Repeat":
-                                repeat_samples[s_name] = (conc, safe_sheet_name)
+                                repeat_samples[s_name_raw] = (conc, safe_sheet_name)
                             elif file_category == "ISR":
-                                isr_samples[s_name] = (conc, safe_sheet_name)
+                                isr_samples[s_name_raw] = (conc, safe_sheet_name)
                             
                 current_inj += 1
                 
                 for std in std_names:
-                    if std in s_name or std.replace("-", "") in s_name:
+                    if std in s_name_up or std.replace("-", "") in s_name_up:
                         file_cc_dict[std] = conc if pd.notna(conc) else ""
                         break
                 
-                if 'LQC' in s_name: lqc_list.append(conc if pd.notna(conc) else ""); lqc_ids.append(s_name)
-                elif 'MMQC' in s_name: mmqc_list.append(conc if pd.notna(conc) else ""); mmqc_ids.append(s_name)
-                elif 'MQC' in s_name and 'MMQC' not in s_name: mqc_list.append(conc if pd.notna(conc) else ""); mqc_ids.append(s_name)
-                elif 'HQC' in s_name: hqc_list.append(conc if pd.notna(conc) else ""); hqc_ids.append(s_name)
+                if 'LQC' in s_name_up: lqc_list.append(conc if pd.notna(conc) else ""); lqc_ids.append(s_name_raw)
+                elif 'MMQC' in s_name_up: mmqc_list.append(conc if pd.notna(conc) else ""); mmqc_ids.append(s_name_raw)
+                elif 'MQC' in s_name_up and 'MMQC' not in s_name_up: mqc_list.append(conc if pd.notna(conc) else ""); mqc_ids.append(s_name_raw)
+                elif 'HQC' in s_name_up: hqc_list.append(conc if pd.notna(conc) else ""); hqc_ids.append(s_name_raw)
 
             file_cc_dict['Slope'] = "" if pd.isna(slope) else slope
             file_cc_dict['Intercept'] = "" if pd.isna(intercept) else intercept
@@ -364,23 +367,23 @@ if st.button("Generate Dashboard"):
             
         # -- Build Robust Base-String Mappings for Repeats & ISRs --
         base_to_initial = {}
-        for s_name, (conc, orig_file) in global_samples.items():
-            base_to_initial[get_base_name(s_name)] = (conc, s_name, orig_file)
+        for s_name_raw, (conc, orig_file) in global_samples.items():
+            base_to_initial[get_base_name(s_name_raw).upper()] = (conc, s_name_raw, orig_file)
             
         base_to_repeat = {}
-        for s_name, (conc, rep_file) in repeat_samples.items():
-            base_to_repeat[get_base_name(s_name)] = (conc, s_name, rep_file)
+        for s_name_raw, (conc, rep_file) in repeat_samples.items():
+            base_to_repeat[get_base_name(s_name_raw).upper()] = (conc, s_name_raw, rep_file)
             
         base_to_isr = {}
-        for s_name, (conc, isr_file) in isr_samples.items():
-            base_to_isr[get_base_name(s_name)] = (conc, s_name, isr_file)
+        for s_name_raw, (conc, isr_file) in isr_samples.items():
+            base_to_isr[get_base_name(s_name_raw).upper()] = (conc, s_name_raw, isr_file)
 
         # -- 2. Build Repeat Analysis Tab --
         repeat_analysis_rows = []
         s_no = 1
         sorted_repeats = sorted(base_to_repeat.items(), key=lambda x: x[1][1])
-        for base, (rep_conc, rep_s_name, rep_file) in sorted_repeats:
-            init_conc, init_s_name, orig_file = base_to_initial.get(base, (np.nan, "Missing", "Unknown"))
+        for base_up, (rep_conc, rep_s_name_raw, rep_file) in sorted_repeats:
+            init_conc, init_s_name_raw, orig_file = base_to_initial.get(base_up, (np.nan, "Missing", "Unknown"))
             
             pct_diff = ""
             if pd.notna(init_conc) and pd.notna(rep_conc) and init_conc > 0 and rep_conc > 0:
@@ -390,7 +393,7 @@ if st.button("Generate Dashboard"):
                 "S.No": s_no,
                 "Initial File Name": orig_file,
                 "Repeat File Name": rep_file,
-                "Sample Name": rep_s_name,
+                "Sample Name": rep_s_name_raw,
                 "Initial Concentration": init_conc,
                 "Repeat Concentration": rep_conc,
                 "% Difference": pct_diff
@@ -406,11 +409,11 @@ if st.button("Generate Dashboard"):
         isr_analysis_rows = []
         s_no_isr = 1
         sorted_isr = sorted(base_to_isr.items(), key=lambda x: x[1][1])
-        for base, (isr_conc, isr_s_name, isr_file) in sorted_isr:
-            init_conc, init_s_name, orig_file = base_to_initial.get(base, (np.nan, "Missing", "Unknown"))
+        for base_up, (isr_conc, isr_s_name_raw, isr_file) in sorted_isr:
+            init_conc, init_s_name_raw, orig_file = base_to_initial.get(base_up, (np.nan, "Missing", "Unknown"))
             
             # Adopt Repeat value if it exists, otherwise use Initial
-            rep_tuple = base_to_repeat.get(base)
+            rep_tuple = base_to_repeat.get(base_up)
             final_prior_conc = rep_tuple[0] if rep_tuple else init_conc
             
             pct_diff = ""
@@ -419,7 +422,7 @@ if st.button("Generate Dashboard"):
                 
             isr_analysis_rows.append({
                 "S.No": s_no_isr,
-                "Sample Name": isr_s_name,
+                "Sample Name": isr_s_name_raw,
                 "Initial Concentration": final_prior_conc,
                 "ISR Concentration": isr_conc,
                 "% Difference": pct_diff
@@ -779,24 +782,6 @@ if st.button("Generate Dashboard"):
                         ws.conditional_format(data_range, {'type': 'formula', 'criteria': f"=AND(ISNUMBER({col_letter}5), OR({col_letter}5<{col_letter}$3, {col_letter}5>{col_letter}$4))", 'format': yellow_flag})
 
             # --- CONCENTRATION DATA TABS (INITIAL & REPEATS) ---
-            mapped_samples = {}
-            if num_subj > 0 and periods_list and timepoints_list:
-                for s_name, (conc, orig_file) in global_samples.items():
-                    parts = re.split(r'[-_]', s_name)
-                    subj_str = parts[0] if len(parts) > 0 else s_name
-                    period_str = parts[1] if len(parts) > 1 else ""
-                    tp_str = parts[2] if len(parts) > 2 else ""
-                    
-                    subj_nums = re.findall(r'\d+', subj_str)
-                    subj_int = int(subj_nums[-1]) if subj_nums else 0
-                    period_clean = period_str.strip().upper()
-                    
-                    tp_nums = re.findall(r'\d+\.\d+|\d+', tp_str)
-                    tp_float = float(tp_nums[0]) if tp_nums else -1.0
-                    if "PRE" in tp_str.upper(): tp_float = -1.0
-                    
-                    mapped_samples[(subj_int, period_clean, tp_float)] = (conc, s_name, orig_file)
-            
             ws_conc = workbook.add_worksheet("Concentration Data")
             ws_conc.set_column('A:B', 15, general_fmt)
             ws_conc.set_column('C:C', 15, general_fmt)
@@ -808,6 +793,7 @@ if st.button("Generate Dashboard"):
                 
             row_idx = 1
             if num_subj > 0 and periods_list and timepoints_list:
+                # Setup-driven iteration
                 for subj_idx in range(1, num_subj + 1):
                     subj_formatted = f"S{subj_idx:03d}"
                     for period_val in periods_list:
@@ -817,26 +803,46 @@ if st.button("Generate Dashboard"):
                             tp_float = float(tp_nums[0]) if tp_nums else -1.0
                             if "PRE" in str(tp_val).upper(): tp_float = -1.0
                             
-                            lookup_key = (subj_idx, period_clean, tp_float)
-                            if lookup_key in mapped_samples:
-                                conc, real_s_name, orig_file = mapped_samples[lookup_key]
-                                display_conc = "BLQ" if (pd.isna(conc) or (pd.notna(lloq) and conc < lloq)) else conc
-                                s_name_out = real_s_name
-                            else:
-                                display_conc = "M"
-                                s_name_out = "Missing"
+                            # Search the global dict to see if this subject/period/tp exists
+                            found_match = False
+                            for base_up, (initial_conc, s_name_raw, orig_file) in base_to_initial.items():
+                                parts = re.split(r'[-_]', s_name_raw)
+                                subj_str = parts[0] if len(parts) > 0 else s_name_raw
+                                p_str = parts[1] if len(parts) > 1 else ""
+                                t_str = parts[2] if len(parts) > 2 else ""
                                 
-                            ws_conc.write(row_idx, 0, subj_formatted, data_white)
-                            ws_conc.write(row_idx, 1, period_val, data_white)
-                            ws_conc.write(row_idx, 2, f"'{tp_val}", data_white)
-                            ws_conc.write(row_idx, 3, display_conc, data_white if display_conc in ["BLQ", "M"] else data_white_float)
-                            ws_conc.write(row_idx, 4, s_name_out, data_white)
+                                s_nums = re.findall(r'\d+', subj_str)
+                                s_int = int(s_nums[-1]) if s_nums else 0
+                                p_clean = p_str.strip().upper()
+                                
+                                t_nums = re.findall(r'\d+\.\d+|\d+', t_str)
+                                t_flt = float(t_nums[0]) if t_nums else -1.0
+                                if "PRE" in t_str.upper(): t_flt = -1.0
+                                
+                                if s_int == subj_idx and p_clean == period_clean and t_flt == tp_float:
+                                    display_conc = "BLQ" if (pd.isna(initial_conc) or (pd.notna(lloq) and initial_conc < lloq)) else initial_conc
+                                    ws_conc.write(row_idx, 0, subj_formatted, data_white)
+                                    ws_conc.write(row_idx, 1, period_val, data_white)
+                                    ws_conc.write(row_idx, 2, f"'{tp_val}", data_white)
+                                    ws_conc.write(row_idx, 3, display_conc, data_white if display_conc in ["BLQ", "M"] else data_white_float)
+                                    ws_conc.write(row_idx, 4, s_name_raw, data_white)
+                                    found_match = True
+                                    break
+                                    
+                            if not found_match:
+                                ws_conc.write(row_idx, 0, subj_formatted, data_white)
+                                ws_conc.write(row_idx, 1, period_val, data_white)
+                                ws_conc.write(row_idx, 2, f"'{tp_val}", data_white)
+                                ws_conc.write(row_idx, 3, "M", data_white)
+                                ws_conc.write(row_idx, 4, "Missing", data_white)
+                                
                             row_idx += 1
             else:
-                for s_name, (conc, orig_file) in sorted(global_samples.items(), key=lambda x: extract_sort_num(x[0])):
+                # Unstructured Iteration
+                for s_name_raw, (conc, orig_file) in sorted(global_samples.items(), key=lambda x: extract_sort_num(x[0])):
                     display_conc = "BLQ" if (pd.isna(conc) or (pd.notna(lloq) and conc < lloq)) else conc
-                    parts = re.split(r'[-_]', s_name)
-                    subj = parts[0] if len(parts) > 0 else s_name
+                    parts = re.split(r'[-_]', s_name_raw)
+                    subj = parts[0] if len(parts) > 0 else s_name_raw
                     period = parts[1] if len(parts) > 1 else ""
                     timep = parts[2] if len(parts) > 2 else ""
                     if subj.startswith('S') and subj[1:].isdigit(): subj = f"S{int(subj[1:]):03d}"
@@ -845,7 +851,7 @@ if st.button("Generate Dashboard"):
                     ws_conc.write(row_idx, 1, period, data_white)
                     ws_conc.write(row_idx, 2, f"'{timep}", data_white)
                     ws_conc.write(row_idx, 3, display_conc, data_white if display_conc == "BLQ" else data_white_float)
-                    ws_conc.write(row_idx, 4, s_name, data_white)
+                    ws_conc.write(row_idx, 4, s_name_raw, data_white)
                     row_idx += 1
 
             if repeat_files:
@@ -871,37 +877,53 @@ if st.button("Generate Dashboard"):
                                 tp_float = float(tp_nums[0]) if tp_nums else -1.0
                                 if "PRE" in str(tp_val).upper(): tp_float = -1.0
                                 
-                                lookup_key = (subj_idx, period_clean, tp_float)
-                                
-                                if lookup_key in mapped_samples:
-                                    initial_conc, real_s_name, orig_file = mapped_samples[lookup_key]
-                                    base = get_base_name(real_s_name)
-                                    repeat_conc, repeat_s_name, rep_file = base_to_repeat.get(base, (np.nan, None, ""))
+                                found_match = False
+                                for base_up, (initial_conc, real_s_name, orig_file) in base_to_initial.items():
+                                    parts = re.split(r'[-_]', real_s_name)
+                                    subj_str = parts[0] if len(parts) > 0 else real_s_name
+                                    p_str = parts[1] if len(parts) > 1 else ""
+                                    t_str = parts[2] if len(parts) > 2 else ""
                                     
-                                    has_repeat = repeat_s_name is not None
-                                    final_conc = repeat_conc if has_repeat else initial_conc
-                                    final_s_name = repeat_s_name if has_repeat else real_s_name
+                                    s_nums = re.findall(r'\d+', subj_str)
+                                    s_int = int(s_nums[-1]) if s_nums else 0
+                                    p_clean = p_str.strip().upper()
                                     
-                                    display_final = "BLQ" if (pd.isna(final_conc) or (pd.notna(lloq) and final_conc < lloq)) else final_conc
-                                    display_initial = "BLQ" if (pd.isna(initial_conc) or (pd.notna(lloq) and initial_conc < lloq)) else initial_conc
+                                    t_nums = re.findall(r'\d+\.\d+|\d+', t_str)
+                                    t_flt = float(t_nums[0]) if t_nums else -1.0
+                                    if "PRE" in t_str.upper(): t_flt = -1.0
                                     
-                                    pct_diff = ""
-                                    if has_repeat and pd.notna(initial_conc) and pd.notna(repeat_conc) and display_initial != "BLQ" and display_final != "BLQ" and initial_conc > 0:
-                                        pct_diff = ((repeat_conc - initial_conc) / ((initial_conc + repeat_conc) / 2)) * 100
+                                    if s_int == subj_idx and p_clean == period_clean and t_flt == tp_float:
                                         
-                                    ws_rep.write(row_idx, 0, subj_formatted, data_white)
-                                    ws_rep.write(row_idx, 1, period_val, data_white)
-                                    ws_rep.write(row_idx, 2, f"'{tp_val}", data_white)
-                                    ws_rep.write(row_idx, 3, display_final, data_white if display_final in ["BLQ", "M"] else data_white_float)
-                                    ws_rep.write(row_idx, 4, final_s_name, data_white)
-                                    
-                                    if has_repeat:
-                                        ws_rep.write(row_idx, 5, display_initial, data_white if display_initial in ["BLQ", "M"] else data_white_float)
-                                        ws_rep.write(row_idx, 6, pct_diff, data_white_pct if pct_diff != "" else data_white)
-                                    else:
-                                        ws_rep.write(row_idx, 5, "", data_white)
-                                        ws_rep.write(row_idx, 6, "", data_white)
-                                else:
+                                        repeat_conc, repeat_s_name_raw, rep_file = base_to_repeat.get(base_up, (np.nan, None, ""))
+                                        has_repeat = repeat_s_name_raw is not None
+                                        
+                                        final_conc = repeat_conc if has_repeat else initial_conc
+                                        final_s_name = repeat_s_name_raw if has_repeat else real_s_name
+                                        
+                                        display_final = "BLQ" if (pd.isna(final_conc) or (pd.notna(lloq) and final_conc < lloq)) else final_conc
+                                        display_initial = "BLQ" if (pd.isna(initial_conc) or (pd.notna(lloq) and initial_conc < lloq)) else initial_conc
+                                        
+                                        pct_diff = ""
+                                        if has_repeat and pd.notna(initial_conc) and pd.notna(repeat_conc) and display_initial != "BLQ" and display_final != "BLQ" and initial_conc > 0:
+                                            pct_diff = ((repeat_conc - initial_conc) / ((initial_conc + repeat_conc) / 2)) * 100
+                                            
+                                        ws_rep.write(row_idx, 0, subj_formatted, data_white)
+                                        ws_rep.write(row_idx, 1, period_val, data_white)
+                                        ws_rep.write(row_idx, 2, f"'{tp_val}", data_white)
+                                        ws_rep.write(row_idx, 3, display_final, data_white if display_final in ["BLQ", "M"] else data_white_float)
+                                        ws_rep.write(row_idx, 4, final_s_name, data_white)
+                                        
+                                        if has_repeat:
+                                            ws_rep.write(row_idx, 5, display_initial, data_white if display_initial in ["BLQ", "M"] else data_white_float)
+                                            ws_rep.write(row_idx, 6, pct_diff, data_white_pct if pct_diff != "" else data_white)
+                                        else:
+                                            ws_rep.write(row_idx, 5, "", data_white)
+                                            ws_rep.write(row_idx, 6, "", data_white)
+                                            
+                                        found_match = True
+                                        break
+                                        
+                                if not found_match:
                                     ws_rep.write(row_idx, 0, subj_formatted, data_white)
                                     ws_rep.write(row_idx, 1, period_val, data_white)
                                     ws_rep.write(row_idx, 2, f"'{tp_val}", data_white)
@@ -912,19 +934,19 @@ if st.button("Generate Dashboard"):
                                     
                                 row_idx += 1
                 else:
-                    for s_name, (initial_conc, orig_file) in sorted(global_samples.items(), key=lambda x: extract_sort_num(x[0])):
-                        parts = re.split(r'[-_]', s_name)
-                        subj = parts[0] if len(parts) > 0 else s_name
+                    for s_name_raw, (initial_conc, orig_file) in sorted(global_samples.items(), key=lambda x: extract_sort_num(x[0])):
+                        parts = re.split(r'[-_]', s_name_raw)
+                        subj = parts[0] if len(parts) > 0 else s_name_raw
                         period = parts[1] if len(parts) > 1 else ""
                         timep = parts[2] if len(parts) > 2 else ""
                         if subj.startswith('S') and subj[1:].isdigit(): subj = f"S{int(subj[1:]):03d}"
                         
-                        base = get_base_name(s_name)
-                        repeat_conc, repeat_s_name, rep_file = base_to_repeat.get(base, (np.nan, None, ""))
+                        base_up = get_base_name(s_name_raw).upper()
+                        repeat_conc, repeat_s_name_raw, rep_file = base_to_repeat.get(base_up, (np.nan, None, ""))
                         
-                        has_repeat = repeat_s_name is not None
+                        has_repeat = repeat_s_name_raw is not None
                         final_conc = repeat_conc if has_repeat else initial_conc
-                        final_s_name = repeat_s_name if has_repeat else s_name
+                        final_s_name = repeat_s_name_raw if has_repeat else s_name_raw
                         
                         display_final = "BLQ" if (pd.isna(final_conc) or (pd.notna(lloq) and final_conc < lloq)) else final_conc
                         display_initial = "BLQ" if (pd.isna(initial_conc) or (pd.notna(lloq) and initial_conc < lloq)) else initial_conc
