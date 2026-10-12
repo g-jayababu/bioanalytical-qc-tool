@@ -99,6 +99,7 @@ if st.button("Generate Dashboard"):
                 summary_log.append({"File Name": file.name, "Status": "FAILED", "Error Details": error_msg, "Nominal Conc. Check": "", "Duplicate CC & QC ID Check": "", "Duplicate Sample Name Check": ""})
                 continue
                 
+            # Safely strip entirely empty rows/cols while maintaining non-numeric string values
             df = df.replace(r'^\s*$', np.nan, regex=True).dropna(how='all').dropna(how='all', axis=1).reset_index(drop=True)
             df = df.fillna("")
             
@@ -212,8 +213,10 @@ if st.button("Generate Dashboard"):
                 failed_ccqc = False
                 if 'STANDARD' in s_type or 'QC' in s_type or 'QUALITY' in s_type:
                     if pd.notna(acc_val):
+                        # LLOQ Standard limits: 80 - 120%
                         if ('STANDARD' in s_type or 'STD' in s_name) and ('-A' in s_name or '-1' in s_name):
                             if not (80 <= acc_val <= 120): failed_ccqc = True
+                        # ALL other Standards and QCs limits: 85 - 115%
                         else:
                             if not (85 <= acc_val <= 115): failed_ccqc = True
                     else:
@@ -352,15 +355,15 @@ if st.button("Generate Dashboard"):
 
         excel_tabs["Summary"] = pd.DataFrame(summary_log)
         
+        # -- 1. Repeats Sorted Ascending by Sample Name --
         if all_repeats_data:
             rep_df = pd.DataFrame(all_repeats_data)
-            rep_df['Sort_Num'] = rep_df['Sample Name'].apply(extract_sort_num)
-            rep_df = rep_df.sort_values(by=['Sort_Num', 'Sample Name']).drop('Sort_Num', axis=1)
+            rep_df = rep_df.sort_values(by='Sample Name', ascending=True).reset_index(drop=True)
             excel_tabs["Repeats"] = rep_df
         else:
             excel_tabs["Repeats"] = pd.DataFrame([{"Batch Name": "-", "Sample Name": "-", "Concentration": "-", "Reason Code": "No Repeats Required"}])
             
-        # -- Build the New Repeat Analysis Data --
+        # -- 2. Build the New Repeat Analysis Data Tab --
         repeat_analysis_rows = []
         s_no = 1
         
@@ -381,7 +384,10 @@ if st.button("Generate Dashboard"):
             
             global_parsed[(subj_int, period_clean, tp_float)] = (conc, s_name, orig_file)
 
-        for rep_key, (rep_conc, rep_s_name, rep_file) in sorted(repeat_samples.items(), key=lambda x: (x[0][0], x[0][1], x[0][2])):
+        # Sort repeat_samples by Sample Name alphabetically
+        sorted_repeats = sorted(repeat_samples.items(), key=lambda x: x[1][1])
+        
+        for rep_key, (rep_conc, rep_s_name, rep_file) in sorted_repeats:
             init_conc, init_s_name, orig_file = global_parsed.get(rep_key, (np.nan, "Missing", "Unknown"))
             
             pct_diff = ""
@@ -389,12 +395,12 @@ if st.button("Generate Dashboard"):
                 pct_diff = (rep_conc - init_conc) / ((init_conc + rep_conc) / 2) * 100
                 
             repeat_analysis_rows.append({
-                "S.No.": s_no,
+                "S.No": s_no,
                 "Sample Name": rep_s_name,
-                "Original Batch Name": orig_file,
-                "Repeat Batch Name": rep_file,
-                "Initial Conc.(ng/mL)": init_conc,
-                "Repeat Conc.(ng/mL)": rep_conc,
+                "Initial File Name": orig_file,
+                "Repeat File Name": rep_file,
+                "Initial Concentration": init_conc,
+                "Repeat Concentration": rep_conc,
                 "% Difference": pct_diff
             })
             s_no += 1
@@ -402,7 +408,7 @@ if st.button("Generate Dashboard"):
         if repeat_analysis_rows:
             excel_tabs["Repeat Analysis"] = pd.DataFrame(repeat_analysis_rows)
         else:
-            excel_tabs["Repeat Analysis"] = pd.DataFrame([{"S.No.": "-", "Sample Name": "-", "Original Batch Name": "-", "Repeat Batch Name": "-", "Initial Conc.(ng/mL)": "-", "Repeat Conc.(ng/mL)": "-", "% Difference": "-"}])
+            excel_tabs["Repeat Analysis"] = pd.DataFrame([{"S.No": "-", "Sample Name": "-", "Initial File Name": "-", "Repeat File Name": "-", "Initial Concentration": "-", "Repeat Concentration": "-", "% Difference": "-"}])
         
         if cc_file_data:
             cc_df_data = pd.DataFrame(cc_file_data)
@@ -439,7 +445,7 @@ if st.button("Generate Dashboard"):
             qc_df = pd.concat([pd.DataFrame([row_nom_qc, row_low_qc, row_up_qc]), qc_df_data], ignore_index=True)
             excel_tabs["QC"] = qc_df[qc_columns]
 
-        # --- 2. EXPORT WRITER ---
+        # --- 3. EXPORT WRITER ---
         output = io.BytesIO()
         with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
             
@@ -499,8 +505,8 @@ if st.button("Generate Dashboard"):
                         
                     elif sheet_name == "Repeat Analysis":
                         worksheet.set_column('A:A', 10, general_fmt)
-                        worksheet.set_column('B:D', 25, general_fmt)
-                        worksheet.set_column('E:F', 20, conc_fmt)
+                        worksheet.set_column('B:D', 30, general_fmt)
+                        worksheet.set_column('E:F', 25, conc_fmt)
                         worksheet.set_column('G:G', 20, pct_fmt)
                                 
                     elif sheet_name == "CC":
