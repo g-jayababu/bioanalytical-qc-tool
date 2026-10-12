@@ -7,14 +7,22 @@ import re
 st.set_page_config(layout="wide")
 st.title("Simple Concentration & Repeat Tracker")
 
-st.header("Upload Files")
+st.header("1. Study Parameters")
+col_a, col_b, col_c = st.columns(3)
+with col_a:
+    study_num = st.text_input("Study Number", value="")
+    mol_name = st.text_input("Molecule Name", value="")
+with col_b:
+    lloq = st.number_input("LLOQ Value", value=0.000, format="%.3f")
+    uloq = st.number_input("ULOQ Value", value=100.000, format="%.3f")
+with col_c:
+    unit = st.selectbox("Select Units", ["ng/mL", "pg/mL", "µg/mL"])
 
-col1, col2, col3 = st.columns(3)
+st.header("2. Upload Files")
+col1, col2 = st.columns(2)
 with col1:
-    setup_file = st.file_uploader("Upload Setup Excel File", type=["xls", "xlsx", "xlsm"])
-with col2:
     uploaded_files = st.file_uploader("Upload Main TSQ Export Files", type=["csv", "xls", "xlsx"], accept_multiple_files=True)
-with col3:
+with col2:
     repeat_files = st.file_uploader("Upload Repeat Files (Optional)", type=["csv", "xls", "xlsx"], accept_multiple_files=True)
 
 def load_data(file):
@@ -53,17 +61,11 @@ def get_base_name(name):
     return re.sub(r'[-_](ISR\d*|R\d*|REPEAT\d*)$', '', name, flags=re.IGNORECASE).strip()
 
 if st.button("Generate Final Concentration Tracker"):
-    if setup_file and uploaded_files:
+    if not mol_name or not study_num:
+        st.warning("Please enter the Study Number and Molecule Name before generating.")
+    elif uploaded_files:
         st.success("Files received! Processing concentration data...")
         
-        # Parse Setup File for LLOQ
-        try:
-            setup_df = pd.read_excel(setup_file, header=None, engine='openpyxl')
-            lloq = pd.to_numeric(setup_df.iloc[5, 1], errors='coerce')
-        except Exception as e:
-            st.error(f"Failed to read Setup file. Error: {str(e)}")
-            st.stop()
-            
         initial_samples = {}
         repeat_samples = {}
         
@@ -145,10 +147,21 @@ if st.button("Generate Final Concentration Tracker"):
             ws_rep.set_column('F:F', 20, conc_fmt)
             ws_rep.set_column('G:G', 20, pct_fmt)
             
-            # Write Headers
-            rep_headers = ["Subject No.", "Period No.", "Timepoints", "Final Conc.(ng/mL)", "Sample Name", "Initial Conc.(ng/mL)", "% Difference"]
+            # Write Setup Block (Molecule, Study, Range)
+            ws_rep.write(0, 0, "Molecule Name", data_white)
+            ws_rep.merge_range(0, 1, 0, 2, mol_name.upper(), data_white)
+            
+            ws_rep.write(1, 0, "Study Number", data_white)
+            ws_rep.merge_range(1, 1, 1, 2, study_num.upper(), data_white)
+            
+            ws_rep.write(2, 0, "CC range", data_white)
+            cc_range_str = f"{lloq:.3f} {unit} to {uloq:.3f} {unit}"
+            ws_rep.merge_range(2, 1, 2, 2, cc_range_str, data_white)
+            
+            # Write Main Table Headers offset to row 4
+            rep_headers = ["Subject No.", "Period No.", "Timepoints", f"Final Conc.({unit})", "Sample Name", f"Initial Conc.({unit})", "% Difference"]
             for col_num, header in enumerate(rep_headers): 
-                ws_rep.write(0, col_num, header, table_header_green)
+                ws_rep.write(4, col_num, header, table_header_green)
             
             # Sort initial samples alphanumerically by their raw sample name
             sorted_samples = sorted(initial_samples.items(), key=lambda x: natural_sort_key(x[1][2]))
@@ -174,7 +187,7 @@ if st.button("Generate Final Concentration Tracker"):
                 # Any other generic strings from instrument
                 return raw_clean, True
             
-            row_idx = 1
+            row_idx = 5
             for base_up, (initial_conc, init_raw_str, init_s_name) in sorted_samples:
                 
                 # Parse Subject, Period, Timepoint from Sample Name if possible
@@ -249,4 +262,4 @@ if st.button("Generate Final Concentration Tracker"):
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
         )
     else:
-        st.error("Please upload BOTH the Setup file and the Main TSQ Export file(s).")
+        st.error("Please upload at least one Main TSQ Export file.")
