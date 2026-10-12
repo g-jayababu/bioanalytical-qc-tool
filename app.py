@@ -186,18 +186,31 @@ if st.button("Generate Dashboard"):
             sample_chart = []
             current_inj = 1
             
-            ccqc_rows.append({"Sample Name": "CC and QC", "Area": "", "IS area": "", "Calc.Conc.": "", "% Accuracy": ""})
+            ccqc_rows.append({"Sample Name": "CC and QC", "Area": "", "IS area": "", "Calc.Conc.": "", "Raw.Conc.": "", "% Accuracy": "", "failed_ccqc": False})
             ccqc_chart.append((np.nan, np.nan, np.nan, np.nan, np.nan))
-            ccqc_rows.append({"Sample Name": "Sample Name", "Area": "Area", "IS area": "IS area", "Calc.Conc.": "Calc.Conc.", "% Accuracy": "% Acc"})
+            ccqc_rows.append({"Sample Name": "Sample Name", "Area": "Area", "IS area": "IS area", "Calc.Conc.": "Calc.Conc.", "Raw.Conc.": "", "% Accuracy": "% Acc", "failed_ccqc": False})
             ccqc_chart.append((np.nan, np.nan, np.nan, np.nan, np.nan))
             
             for index, row in df.iterrows():
                 s_name = str(row[name_col]).strip().upper()
                 s_type = str(row[type_col]).strip().upper()
-                conc = pd.to_numeric(row[conc_col], errors='coerce')
+                raw_conc_val = row[conc_col] if conc_col else ""
+                conc = pd.to_numeric(raw_conc_val, errors='coerce')
                 s_is_area = pd.to_numeric(row[is_area_col], errors='coerce')
                 a_area = pd.to_numeric(row[analyte_area_col], errors='coerce') if analyte_area_col else np.nan
                 acc_val = pd.to_numeric(row[acc_col], errors='coerce') if acc_col else np.nan
+                
+                # Flag if a CC or QC failed its bounds
+                failed_ccqc = False
+                if 'STANDARD' in s_type or 'QC' in s_type or 'QUALITY' in s_type:
+                    if pd.notna(acc_val):
+                        if 'STANDARD' in s_type or 'STD' in s_name:
+                            if ('-A' in s_name or '-1' in s_name) and not (80 <= acc_val <= 120): failed_ccqc = True
+                            elif ('-A' not in s_name and '-1' not in s_name) and not (85 <= acc_val <= 115): failed_ccqc = True
+                        elif 'LQC' in s_name and not (80 <= acc_val <= 120): failed_ccqc = True
+                        elif ('MQC' in s_name or 'MMQC' in s_name or 'HQC' in s_name) and not (85 <= acc_val <= 115): failed_ccqc = True
+                    else:
+                        failed_ccqc = True # Failed because there is no valid accuracy calculated
                 
                 if ('STD-A' in s_name or '-1' in s_name) and std_a_area is None: std_a_area = a_area
                 if ('ZERO' in s_name or 'AQSTD' in s_name or '+IS' in s_name) and std_zero_is_area is None: std_zero_is_area = s_is_area
@@ -230,7 +243,14 @@ if st.button("Generate Dashboard"):
                 if 'UNKNOWN' in s_type and 'AQSTD' not in s_name and 'BLK' not in s_name and '+IS' not in s_name and 'BLANK' not in s_name:
                     chart_tuple[4] = conc
 
-                row_dict = {"Sample Name": s_name, "Area": a_area, "IS area": s_is_area, "Calc.Conc.": conc}
+                row_dict = {
+                    "Sample Name": s_name, 
+                    "Area": a_area, 
+                    "IS area": s_is_area, 
+                    "Calc.Conc.": conc, 
+                    "Raw.Conc.": raw_conc_val,
+                    "failed_ccqc": failed_ccqc
+                }
                 
                 if 'STANDARD' in s_type or 'QC' in s_type or 'QUALITY' in s_type:
                     row_dict["% Accuracy"] = acc_val
@@ -298,8 +318,8 @@ if st.button("Generate Dashboard"):
                 }
                 qc_file_data.append(q_dict)
                 
-            avg_row = {"Sample Name": "Average IS area of CC and QC", "Area": "", "IS area": avg_is_area, "Calc.Conc.": "", "% Accuracy": ""}
-            header_row = {"Sample Name": "Sample Name", "Area": "Area", "IS area": "IS area", "Calc.Conc.": "Calc.Conc.", "% Accuracy": "% IS"}
+            avg_row = {"Sample Name": "Average IS area of CC and QC", "Area": "", "IS area": avg_is_area, "Calc.Conc.": "", "Raw.Conc.": "", "% Accuracy": "", "failed_ccqc": False}
+            header_row = {"Sample Name": "Sample Name", "Area": "Area", "IS area": "IS area", "Calc.Conc.": "Calc.Conc.", "Raw.Conc.": "", "% Accuracy": "% IS", "failed_ccqc": False}
             
             final_rows = ccqc_rows + [avg_row, header_row] + sample_rows
             final_chart = ccqc_chart + [(np.nan, np.nan, np.nan, np.nan, np.nan), (np.nan, np.nan, np.nan, np.nan, np.nan)] + sample_chart
@@ -460,18 +480,36 @@ if st.button("Generate Dashboard"):
                         ws.write(r_idx, 1, "Area", table_header_green)
                         ws.write(r_idx, 2, "IS area", table_header_green)
                         ws.write(r_idx, 3, "Calc.Conc.", table_header_green)
-                        ws.write(r_idx, 4, row_dict["% Accuracy"], table_header_green)
+                        ws.write(r_idx, 4, row_dict.get("% Accuracy", "% Acc"), table_header_green)
                     else:
                         ws.write(r_idx, 0, row_dict["Sample Name"], data_white)
                         ws.write(r_idx, 1, "" if pd.isna(row_dict["Area"]) else row_dict["Area"], data_white)
-                        ws.write(r_idx, 2, "" if pd.isna(row_dict["IS area"]) else row_dict["IS area"], data_white)
-                        conc_val = row_dict["Calc.Conc."]
-                        if pd.notna(conc_val) and isinstance(conc_val, (int, float)) and conc_val > uloq:
-                            ws.write(r_idx, 3, conc_val, data_yellow_float)
+                        
+                        # Add suffix * to IS Area if CC/QC failed
+                        is_area_val = row_dict.get("IS area", "")
+                        if row_dict.get("failed_ccqc", False) and pd.notna(is_area_val) and is_area_val != "":
+                            # Format integers safely before appending string
+                            is_str = str(int(is_area_val)) if isinstance(is_area_val, float) and is_area_val.is_integer() else str(is_area_val)
+                            ws.write(r_idx, 2, f"{is_str}*", data_white)
                         else:
-                            ws.write(r_idx, 3, "" if pd.isna(conc_val) else conc_val, data_white_float)
+                            ws.write(r_idx, 2, "" if pd.isna(is_area_val) else is_area_val, data_white)
                             
-                        acc = row_dict["% Accuracy"]
+                        # Preserve string text for missing/invalid concentrations instead of leaving blank
+                        conc_val = row_dict.get("Calc.Conc.", np.nan)
+                        raw_conc = row_dict.get("Raw.Conc.", "")
+                        
+                        if pd.notna(conc_val) and isinstance(conc_val, (int, float)):
+                            if conc_val > uloq:
+                                ws.write(r_idx, 3, conc_val, data_yellow_float)
+                            else:
+                                ws.write(r_idx, 3, conc_val, data_white_float)
+                        else:
+                            if pd.notna(raw_conc) and str(raw_conc).strip().upper() not in ['NAN', 'NONE', '']:
+                                ws.write(r_idx, 3, str(raw_conc), data_white)
+                            else:
+                                ws.write(r_idx, 3, "", data_white_float)
+                            
+                        acc = row_dict.get("% Accuracy", "")
                         if pd.isna(acc) or acc == "": ws.write(r_idx, 4, "", data_white_pct)
                         else: ws.write(r_idx, 4, acc, data_white_pct)
 
