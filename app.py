@@ -10,13 +10,15 @@ st.title("Bioanalytical Auto-QC Dashboard")
 
 st.header("1. Upload Files")
 
-col1, col2, col3 = st.columns(3)
+col1, col2, col3, col4 = st.columns(4)
 with col1:
     setup_file = st.file_uploader("Upload Setup Excel File", type=["xls", "xlsx", "xlsm"])
 with col2:
     uploaded_files = st.file_uploader("Upload TSQ Quantis Plus Export Files", type=["csv", "xls", "xlsx"], accept_multiple_files=True)
 with col3:
     repeat_files = st.file_uploader("Upload Repeat Files (Optional)", type=["csv", "xls", "xlsx"], accept_multiple_files=True)
+with col4:
+    isr_files = st.file_uploader("Upload ISR Files (Optional)", type=["csv", "xls", "xlsx"], accept_multiple_files=True)
 
 def load_data(file):
     file_name_lower = file.name.lower()
@@ -88,13 +90,14 @@ if st.button("Generate Dashboard"):
         batch_meta_data = {}
         all_repeats_data = [] 
         repeat_samples = {}
+        isr_samples = {}
         
-        combined_files = [(f, False) for f in uploaded_files]
-        if repeat_files:
-            combined_files.extend([(f, True) for f in repeat_files])
+        combined_files = [(f, "Main") for f in uploaded_files]
+        if repeat_files: combined_files.extend([(f, "Repeat") for f in repeat_files])
+        if isr_files: combined_files.extend([(f, "ISR") for f in isr_files])
         
-        # --- 1. PARSE ALL EXPORT FILES (Main & Repeats) ---
-        for file, is_repeat in combined_files:
+        # --- 1. PARSE ALL EXPORT FILES (Main, Repeats & ISR) ---
+        for file, file_category in combined_files:
             file.seek(0)
             safe_sheet_name = re.sub(r'[\\/*?:\[\]]', '_', file.name)[:31]
             
@@ -103,7 +106,6 @@ if st.button("Generate Dashboard"):
                 summary_log.append({"File Name": file.name, "Status": "FAILED", "Error Details": error_msg, "Nominal Conc. Check": "", "Duplicate CC & QC ID Check": "", "Duplicate Sample Name Check": ""})
                 continue
                 
-            # Safely strip entirely empty rows/cols while maintaining non-numeric string values
             df = df.replace(r'^\s*$', np.nan, regex=True).dropna(how='all').dropna(how='all', axis=1).reset_index(drop=True)
             df = df.fillna("")
             
@@ -281,24 +283,29 @@ if st.button("Generate Dashboard"):
                             file_sample_dupes.append(s_name)
                         else:
                             seen_samples.add(s_name)
-                            if not is_repeat:
+                            
+                            # Determine universal lookup key stripping all suffixes
+                            parts = re.split(r'[-_]', s_name)
+                            subj_str = parts[0] if len(parts) > 0 else s_name
+                            period_str = parts[1] if len(parts) > 1 else ""
+                            tp_str = parts[2] if len(parts) > 2 else ""
+                            
+                            subj_nums = re.findall(r'\d+', subj_str)
+                            subj_int = int(subj_nums[-1]) if subj_nums else 0
+                            period_clean = period_str.strip().upper()
+                            
+                            tp_nums = re.findall(r'\d+\.\d+|\d+', tp_str)
+                            tp_float = float(tp_nums[0]) if tp_nums else -1.0
+                            if "PRE" in tp_str.upper(): tp_float = -1.0
+                            
+                            lookup_key = (subj_int, period_clean, tp_float)
+                            
+                            if file_category == "Main":
                                 global_samples[s_name] = (conc, safe_sheet_name)
-                            else:
-                                if 'STD' not in s_name and 'QC' not in s_name:
-                                    parts = re.split(r'[-_]', s_name)
-                                    subj_str = parts[0] if len(parts) > 0 else s_name
-                                    period_str = parts[1] if len(parts) > 1 else ""
-                                    tp_str = parts[2] if len(parts) > 2 else ""
-                                    
-                                    subj_nums = re.findall(r'\d+', subj_str)
-                                    subj_int = int(subj_nums[-1]) if subj_nums else 0
-                                    period_clean = period_str.strip().upper()
-                                    
-                                    tp_nums = re.findall(r'\d+\.\d+|\d+', tp_str)
-                                    tp_float = float(tp_nums[0]) if tp_nums else -1.0
-                                    if "PRE" in tp_str.upper(): tp_float = -1.0
-                                    
-                                    repeat_samples[(subj_int, period_clean, tp_float)] = (conc, s_name, safe_sheet_name)
+                            elif file_category == "Repeat":
+                                repeat_samples[lookup_key] = (conc, s_name, safe_sheet_name)
+                            elif file_category == "ISR":
+                                isr_samples[lookup_key] = (conc, s_name, safe_sheet_name)
                             
                 current_inj += 1
                 
@@ -317,7 +324,8 @@ if st.button("Generate Dashboard"):
             file_cc_dict['r'] = "" if pd.isna(r_val) else r_val
             cc_file_data.append(file_cc_dict)
             
-            if not is_repeat:
+            # Anomaly Tracker only monitors Main files, ignores intentional Repeats/ISRs
+            if file_category == "Main":
                 for smp in out_of_range_is:
                     all_repeats_data.append({"Batch Name": safe_sheet_name, "Sample Name": smp['name'], "Concentration": smp['conc'], "Reason Code": "Out of Range %IS"})
                 for smp in above_uloq:
@@ -365,10 +373,7 @@ if st.button("Generate Dashboard"):
         else:
             excel_tabs["Repeats"] = pd.DataFrame([{"Batch Name": "-", "Sample Name": "-", "Concentration": "-", "Reason Code": "No Repeats Required"}])
             
-        # -- 2. Build the New Repeat Analysis Data Tab --
-        repeat_analysis_rows = []
-        s_no = 1
-        
+        # -- Global parsing dictionary mapping for universal lookup --
         global_parsed = {}
         for s_name, (conc, orig_file) in global_samples.items():
             parts = re.split(r'[-_]', s_name)
@@ -386,6 +391,9 @@ if st.button("Generate Dashboard"):
             
             global_parsed[(subj_int, period_clean, tp_float)] = (conc, s_name, orig_file)
 
+        # -- 2. Build the New Repeat Analysis Data Tab --
+        repeat_analysis_rows = []
+        s_no = 1
         sorted_repeats = sorted(repeat_samples.items(), key=lambda x: x[1][1])
         
         for rep_key, (rep_conc, rep_s_name, rep_file) in sorted_repeats:
@@ -397,9 +405,9 @@ if st.button("Generate Dashboard"):
                 
             repeat_analysis_rows.append({
                 "S.No": s_no,
-                "Sample Name": rep_s_name,
                 "Initial File Name": orig_file,
                 "Repeat File Name": rep_file,
+                "Sample Name": rep_s_name,
                 "Initial Concentration": init_conc,
                 "Repeat Concentration": rep_conc,
                 "% Difference": pct_diff
@@ -409,7 +417,37 @@ if st.button("Generate Dashboard"):
         if repeat_analysis_rows:
             excel_tabs["Repeat Analysis"] = pd.DataFrame(repeat_analysis_rows)
         else:
-            excel_tabs["Repeat Analysis"] = pd.DataFrame([{"S.No": "-", "Sample Name": "-", "Initial File Name": "-", "Repeat File Name": "-", "Initial Concentration": "-", "Repeat Concentration": "-", "% Difference": "-"}])
+            excel_tabs["Repeat Analysis"] = pd.DataFrame([{"S.No": "-", "Initial File Name": "-", "Repeat File Name": "-", "Sample Name": "-", "Initial Concentration": "-", "Repeat Concentration": "-", "% Difference": "-"}])
+            
+        # -- 3. Build the New ISR Analysis Data Tab --
+        isr_analysis_rows = []
+        s_no_isr = 1
+        sorted_isr = sorted(isr_samples.items(), key=lambda x: x[1][1])
+        
+        for isr_key, (isr_conc, isr_s_name, isr_file) in sorted_isr:
+            # Get Base Initial
+            init_conc, _, _ = global_parsed.get(isr_key, (np.nan, "Missing", "Unknown"))
+            # If a repeat exists, its value overwrote the initial value before ISR execution
+            rep_tuple = repeat_samples.get(isr_key)
+            final_prior_conc = rep_tuple[0] if rep_tuple else init_conc
+            
+            pct_diff = ""
+            if pd.notna(final_prior_conc) and pd.notna(isr_conc) and final_prior_conc > 0 and isr_conc > 0:
+                pct_diff = (isr_conc - final_prior_conc) / ((final_prior_conc + isr_conc) / 2) * 100
+                
+            isr_analysis_rows.append({
+                "S.No": s_no_isr,
+                "Sample Name": isr_s_name,
+                "Initial Concentration": final_prior_conc,
+                "ISR Concentration": isr_conc,
+                "% Difference": pct_diff
+            })
+            s_no_isr += 1
+            
+        if isr_analysis_rows:
+            excel_tabs["ISR Analysis"] = pd.DataFrame(isr_analysis_rows)
+        else:
+            excel_tabs["ISR Analysis"] = pd.DataFrame([{"S.No": "-", "Sample Name": "-", "Initial Concentration": "-", "ISR Concentration": "-", "% Difference": "-"}])
         
         if cc_file_data:
             cc_df_data = pd.DataFrame(cc_file_data)
@@ -446,11 +484,11 @@ if st.button("Generate Dashboard"):
             qc_df = pd.concat([pd.DataFrame([row_nom_qc, row_low_qc, row_up_qc]), qc_df_data], ignore_index=True)
             excel_tabs["QC"] = qc_df[qc_columns]
 
-        # --- 3. EXPORT WRITER ---
+        # --- 4. EXPORT WRITER ---
         output = io.BytesIO()
         with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
             
-            for sh_name in ["Summary", "Repeats", "Repeat Analysis", "CC", "QC"]:
+            for sh_name in ["Summary", "Repeats", "Repeat Analysis", "ISR Analysis", "CC", "QC"]:
                 if sh_name in excel_tabs:
                     excel_tabs[sh_name].to_excel(writer, sheet_name=sh_name, index=False)
             
@@ -486,7 +524,7 @@ if st.button("Generate Dashboard"):
             failed_ccqc_pct_fmt = workbook.add_format({**tnr, 'bg_color': '#FFFF00', 'bold': True, 'font_color': '#000000', 'border': 1, 'align': 'center', 'valign': 'vcenter', 'num_format': '0.00'})
             failed_ccqc_float_fmt = workbook.add_format({**tnr, 'bg_color': '#FFFF00', 'bold': True, 'font_color': '#000000', 'border': 1, 'align': 'center', 'valign': 'vcenter', 'num_format': '0.000'})
 
-            for sheet_name in ["Summary", "Repeats", "Repeat Analysis", "CC", "QC"]:
+            for sheet_name in ["Summary", "Repeats", "Repeat Analysis", "ISR Analysis", "CC", "QC"]:
                 if sheet_name in excel_tabs:
                     df_tab = excel_tabs[sheet_name]
                     worksheet = writer.sheets[sheet_name]
@@ -509,6 +547,12 @@ if st.button("Generate Dashboard"):
                         worksheet.set_column('B:D', 30, general_fmt)
                         worksheet.set_column('E:F', 25, conc_fmt)
                         worksheet.set_column('G:G', 20, pct_fmt)
+                        
+                    elif sheet_name == "ISR Analysis":
+                        worksheet.set_column('A:A', 10, general_fmt)
+                        worksheet.set_column('B:B', 30, general_fmt)
+                        worksheet.set_column('C:D', 25, conc_fmt)
+                        worksheet.set_column('E:E', 20, pct_fmt)
                                 
                     elif sheet_name == "CC":
                         worksheet.set_column(1, 2, 15, general_fmt)
