@@ -57,8 +57,12 @@ if st.button("Generate Dashboard"):
             study_num = str(setup_df.iloc[1, 1]).strip()
             num_subj_raw = setup_df.iloc[2, 1]
             num_subj = int(pd.to_numeric(num_subj_raw, errors='coerce')) if pd.notna(num_subj_raw) else 0
+            
             periods_str = str(setup_df.iloc[3, 1]).strip() if pd.notna(setup_df.iloc[3, 1]) else ""
             timepoints_str = str(setup_df.iloc[4, 1]).strip() if pd.notna(setup_df.iloc[4, 1]) else ""
+            
+            periods_list = [p.strip() for p in periods_str.split(',')] if periods_str else []
+            timepoints_list = [tp.strip() for tp in timepoints_str.split(',')] if timepoints_str else []
             
             lloq = pd.to_numeric(setup_df.iloc[5, 1], errors='coerce')
             uloq = pd.to_numeric(setup_df.iloc[6, 1], errors='coerce')
@@ -213,10 +217,8 @@ if st.button("Generate Dashboard"):
                 failed_ccqc = False
                 if 'STANDARD' in s_type or 'QC' in s_type or 'QUALITY' in s_type:
                     if pd.notna(acc_val):
-                        # LLOQ Standard limits: 80 - 120%
                         if ('STANDARD' in s_type or 'STD' in s_name) and ('-A' in s_name or '-1' in s_name):
                             if not (80 <= acc_val <= 120): failed_ccqc = True
-                        # ALL other Standards and QCs limits: 85 - 115%
                         else:
                             if not (85 <= acc_val <= 115): failed_ccqc = True
                     else:
@@ -384,7 +386,6 @@ if st.button("Generate Dashboard"):
             
             global_parsed[(subj_int, period_clean, tp_float)] = (conc, s_name, orig_file)
 
-        # Sort repeat_samples by Sample Name alphabetically
         sorted_repeats = sorted(repeat_samples.items(), key=lambda x: x[1][1])
         
         for rep_key, (rep_conc, rep_s_name, rep_file) in sorted_repeats:
