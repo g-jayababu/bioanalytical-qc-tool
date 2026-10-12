@@ -9,10 +9,12 @@ st.title("Simple Concentration & Repeat Tracker")
 
 st.header("Upload Files")
 
-col1, col2 = st.columns(2)
+col1, col2, col3 = st.columns(3)
 with col1:
-    uploaded_files = st.file_uploader("Upload Main TSQ Export Files", type=["csv", "xls", "xlsx"], accept_multiple_files=True)
+    setup_file = st.file_uploader("Upload Setup Excel File", type=["xls", "xlsx", "xlsm"])
 with col2:
+    uploaded_files = st.file_uploader("Upload Main TSQ Export Files", type=["csv", "xls", "xlsx"], accept_multiple_files=True)
+with col3:
     repeat_files = st.file_uploader("Upload Repeat Files (Optional)", type=["csv", "xls", "xlsx"], accept_multiple_files=True)
 
 def load_data(file):
@@ -51,9 +53,17 @@ def get_base_name(name):
     return re.sub(r'[-_](ISR\d*|R\d*|REPEAT\d*)$', '', name, flags=re.IGNORECASE).strip()
 
 if st.button("Generate Final Concentration Tracker"):
-    if uploaded_files:
+    if setup_file and uploaded_files:
         st.success("Files received! Processing concentration data...")
         
+        # Parse Setup File for LLOQ
+        try:
+            setup_df = pd.read_excel(setup_file, header=None, engine='openpyxl')
+            lloq = pd.to_numeric(setup_df.iloc[5, 1], errors='coerce')
+        except Exception as e:
+            st.error(f"Failed to read Setup file. Error: {str(e)}")
+            st.stop()
+            
         initial_samples = {}
         repeat_samples = {}
         
@@ -143,6 +153,27 @@ if st.button("Generate Final Concentration Tracker"):
             # Sort initial samples alphanumerically by their raw sample name
             sorted_samples = sorted(initial_samples.items(), key=lambda x: natural_sort_key(x[1][2]))
             
+            # Helper to map display values with BLQ Logic
+            def get_display_val(conc_val, raw_str, current_lloq):
+                raw_clean = str(raw_str).strip()
+                
+                # Manual overrides for < 0
+                if raw_clean in ["< 0", "<0"]:
+                    return "BLQ", True
+                    
+                # Numeric evaluations against LLOQ
+                if pd.notna(conc_val) and isinstance(conc_val, (int, float)):
+                    if pd.notna(current_lloq) and conc_val < current_lloq:
+                        return "BLQ", True
+                    return conc_val, False
+                
+                # Empty or missing states
+                if raw_clean.upper() in ["NAN", "NONE", ""]:
+                    return "", True
+                
+                # Any other generic strings from instrument
+                return raw_clean, True
+            
             row_idx = 1
             for base_up, (initial_conc, init_raw_str, init_s_name) in sorted_samples:
                 
@@ -154,17 +185,17 @@ if st.button("Generate Final Concentration Tracker"):
                 if subj.startswith('S') and subj[1:].isdigit(): 
                     subj = f"S{int(subj[1:]):03d}"
                     
-                # Apply 00.00 hrs padding to timepoints
+                # Apply strictly 00.00 formatting without ' or hrs
                 timep_display = ""
                 if timep:
                     if "PRE" in timep.upper():
-                        timep_display = "'PRE"
+                        timep_display = "PRE"
                     else:
                         t_nums = re.findall(r'\d+\.\d+|\d+', timep)
                         if t_nums:
-                            timep_display = f"'{float(t_nums[0]):05.2f} hrs"
+                            timep_display = f"{float(t_nums[0]):05.2f}"
                         else:
-                            timep_display = f"'{timep}"
+                            timep_display = f"{timep}"
                 
                 # Check for Repeat
                 repeat_tuple = repeat_samples.get(base_up)
@@ -181,31 +212,24 @@ if st.button("Generate Final Concentration Tracker"):
                     final_raw_str = init_raw_str
                     final_s_name = init_s_name
 
-                # Display Logic for Final Conc
-                if pd.notna(final_conc) and isinstance(final_conc, (int, float)):
-                    c_final_out = final_conc
-                    c_final_fmt = data_white_float
-                else:
-                    c_final_out = final_raw_str
-                    c_final_fmt = data_white
+                # Process Final Conc Output
+                c_final_out, is_final_str = get_display_val(final_conc, final_raw_str, lloq)
+                c_final_fmt = data_white if is_final_str else data_white_float
                     
-                # Display Logic for Initial Conc
-                if pd.notna(initial_conc) and isinstance(initial_conc, (int, float)):
-                    c_init_out = initial_conc
-                    c_init_fmt = data_white_float
-                else:
-                    c_init_out = init_raw_str
-                    c_init_fmt = data_white
+                # Process Initial Conc Output
+                c_init_out, is_init_str = get_display_val(initial_conc, init_raw_str, lloq)
+                c_init_fmt = data_white if is_init_str else data_white_float
 
-                # Calculate % Difference
+                # Calculate % Difference (Suppressed if values are BLQ)
                 pct_diff = ""
-                if has_repeat and pd.notna(initial_conc) and pd.notna(repeat_conc) and initial_conc > 0:
-                    pct_diff = ((repeat_conc - initial_conc) / ((initial_conc + repeat_conc) / 2)) * 100
+                if has_repeat and not is_init_str and not is_final_str and initial_conc > 0:
+                    pct_diff = ((final_conc - initial_conc) / ((initial_conc + final_conc) / 2)) * 100
 
                 # Write Row
                 ws_rep.write(row_idx, 0, subj, data_white)
                 ws_rep.write(row_idx, 1, period, data_white)
-                ws_rep.write(row_idx, 2, timep_display, data_white)
+                # Using write_string prevents Excel from automatically stripping the leading 0 in 01.00
+                ws_rep.write_string(row_idx, 2, timep_display, data_white) 
                 ws_rep.write(row_idx, 3, c_final_out, c_final_fmt)
                 ws_rep.write(row_idx, 4, final_s_name, data_white)
                 
@@ -225,4 +249,4 @@ if st.button("Generate Final Concentration Tracker"):
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
         )
     else:
-        st.error("Please upload at least Export file.")
+        st.error("Please upload BOTH the Setup file and the Main TSQ Export file(s).")
