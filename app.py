@@ -22,25 +22,25 @@ def load_data(file):
     file_name_lower = file.name.lower()
     dummy_cols = list(range(100))
     if file_name_lower.endswith('.csv'):
-        try: return pd.read_csv(file, names=dummy_cols, on_bad_lines='skip'), None
+        try: return pd.read_csv(file, names=dummy_cols, on_bad_lines='skip', na_filter=False), None
         except Exception as e: return None, f"CSV Error: {str(e)}"
     elif file_name_lower.endswith('.xlsx') or file_name_lower.endswith('.xlsm'):
-        try: return pd.read_excel(file, engine='openpyxl'), None
+        try: return pd.read_excel(file, engine='openpyxl', na_filter=False), None
         except Exception as e: return None, f"XLSX Error: {str(e)}"
     elif file_name_lower.endswith('.xls'):
-        try: return pd.read_excel(file, engine='xlrd'), None
+        try: return pd.read_excel(file, engine='xlrd', na_filter=False), None
         except Exception as e1:
             try:
                 file.seek(0)
-                return pd.read_csv(file, sep='\t', names=dummy_cols, on_bad_lines='skip'), None
+                return pd.read_csv(file, sep='\t', names=dummy_cols, on_bad_lines='skip', na_filter=False), None
             except Exception as e2:
                 try:
                     file.seek(0)
-                    return pd.read_csv(file, sep='\t', encoding='utf-16', names=dummy_cols, on_bad_lines='skip'), None
+                    return pd.read_csv(file, sep='\t', encoding='utf-16', names=dummy_cols, on_bad_lines='skip', na_filter=False), None
                 except Exception as e3:
                     try:
                         file.seek(0)
-                        return pd.read_csv(file, sep='\t', encoding='latin1', names=dummy_cols, on_bad_lines='skip'), None
+                        return pd.read_csv(file, sep='\t', encoding='latin1', names=dummy_cols, on_bad_lines='skip', na_filter=False), None
                     except Exception as e4: return None, f"Failed all formats. Last error: {str(e4)}"
     return None, "Unsupported file extension."
 
@@ -99,7 +99,9 @@ if st.button("Generate Dashboard"):
                 summary_log.append({"File Name": file.name, "Status": "FAILED", "Error Details": error_msg, "Nominal Conc. Check": "", "Duplicate CC & QC ID Check": "", "Duplicate Sample Name Check": ""})
                 continue
                 
-            df = df.dropna(how='all').dropna(how='all', axis=1).reset_index(drop=True)
+            # Safely strip entirely empty rows/cols while maintaining non-numeric string values
+            df = df.replace(r'^\s*$', np.nan, regex=True).dropna(how='all').dropna(how='all', axis=1).reset_index(drop=True)
+            df = df.fillna("")
             
             header_idx = None
             for idx, row in df.iterrows():
@@ -124,7 +126,7 @@ if st.button("Generate Dashboard"):
             else:
                 df.columns = [str(c).lower().strip() for c in df.columns]
 
-            df = df.loc[:, ~df.columns.str.contains('^nan$', case=False, na=False)]
+            df = df.loc[:, ~df.columns.str.contains('^nan$|^$', case=False, na=False)]
 
             name_col = next((c for c in df.columns if 'sample name' in c or 'sample' in c), None)
             type_col = next((c for c in df.columns if 'sample type' in c or 'type' in c), None)
@@ -136,8 +138,8 @@ if st.button("Generate Dashboard"):
             
             date_col = next((c for c in df.columns if 'acq date' in c or 'acquisition date' in c or 'date/time' in c or 'date' in c), None)
             acq_date = ""
-            if date_col and not df[date_col].dropna().empty:
-                raw_date = str(df[date_col].dropna().iloc[0]).strip()
+            if date_col and not df[date_col].empty:
+                raw_date = str(df[date_col].iloc[0]).strip()
                 try: acq_date = pd.to_datetime(raw_date).strftime('%d-%b-%Y').upper()
                 except Exception: acq_date = raw_date
             if not acq_date: acq_date = pd.Timestamp.now().strftime('%d-%b-%Y').upper()
@@ -174,7 +176,7 @@ if st.button("Generate Dashboard"):
             out_of_range_is, above_uloq = [], []
             carryover_samples = []
             
-            cc_qc_df = df[df[type_col].str.contains('Standard|QC|Quality', case=False, na=False)].copy()
+            cc_qc_df = df[df[type_col].astype(str).str.contains('Standard|QC|Quality', case=False, na=False)].copy()
             cc_qc_df[is_area_col] = pd.to_numeric(cc_qc_df[is_area_col], errors='coerce')
             avg_is_area = cc_qc_df[is_area_col].mean()
             lower_is_limit = avg_is_area * 0.4 if pd.notna(avg_is_area) else 0
@@ -186,28 +188,35 @@ if st.button("Generate Dashboard"):
             sample_chart = []
             current_inj = 1
             
-            ccqc_rows.append({"Sample Name": "CC and QC", "Area": "", "IS area": "", "Calc.Conc.": "", "Raw.Conc.": "", "% Accuracy": "", "failed_ccqc": False})
+            ccqc_rows.append({"Sample Name": "CC and QC", "Area": "", "IS area": "", "Calc.Conc.": "", "% Accuracy": "", "failed_ccqc": False})
             ccqc_chart.append((np.nan, np.nan, np.nan, np.nan, np.nan))
-            ccqc_rows.append({"Sample Name": "Sample Name", "Area": "Area", "IS area": "IS area", "Calc.Conc.": "Calc.Conc.", "Raw.Conc.": "", "% Accuracy": "% Acc", "failed_ccqc": False})
+            ccqc_rows.append({"Sample Name": "Sample Name", "Area": "Area", "IS area": "IS area", "Calc.Conc.": "Calc.Conc.", "% Accuracy": "% Acc", "failed_ccqc": False})
             ccqc_chart.append((np.nan, np.nan, np.nan, np.nan, np.nan))
             
             for index, row in df.iterrows():
                 s_name = str(row[name_col]).strip().upper()
                 s_type = str(row[type_col]).strip().upper()
-                raw_conc_val = row[conc_col] if conc_col else ""
-                conc = pd.to_numeric(raw_conc_val, errors='coerce')
-                s_is_area = pd.to_numeric(row[is_area_col], errors='coerce')
-                a_area = pd.to_numeric(row[analyte_area_col], errors='coerce') if analyte_area_col else np.nan
-                acc_val = pd.to_numeric(row[acc_col], errors='coerce') if acc_col else np.nan
+                
+                raw_conc_val = str(row[conc_col]).strip() if conc_col else ""
+                conc = pd.to_numeric(raw_conc_val, errors='coerce') if raw_conc_val != "" else np.nan
+                
+                raw_is_area_val = str(row[is_area_col]).strip() if is_area_col else ""
+                s_is_area = pd.to_numeric(raw_is_area_val, errors='coerce') if raw_is_area_val != "" else np.nan
+                
+                raw_a_area_val = str(row[analyte_area_col]).strip() if analyte_area_col else ""
+                a_area = pd.to_numeric(raw_a_area_val, errors='coerce') if raw_a_area_val != "" else np.nan
+                
+                raw_acc_val = str(row[acc_col]).strip() if acc_col else ""
+                acc_val = pd.to_numeric(raw_acc_val, errors='coerce') if raw_acc_val != "" else np.nan
                 
                 # Flag if a CC or QC failed ICH M10 bounds dynamically
                 failed_ccqc = False
                 if 'STANDARD' in s_type or 'QC' in s_type or 'QUALITY' in s_type:
                     if pd.notna(acc_val):
-                        # LLOQ Standard (STD-A or STD-1) limits: 80 - 120
+                        # LLOQ Standard limits: 80 - 120%
                         if ('STANDARD' in s_type or 'STD' in s_name) and ('-A' in s_name or '-1' in s_name):
                             if not (80 <= acc_val <= 120): failed_ccqc = True
-                        # ALL other Standards and QCs limits: 85 - 115
+                        # ALL other Standards and QCs limits: 85 - 115%
                         else:
                             if not (85 <= acc_val <= 115): failed_ccqc = True
                     else:
@@ -247,7 +256,9 @@ if st.button("Generate Dashboard"):
                 row_dict = {
                     "Sample Name": s_name, 
                     "Area": a_area, 
+                    "Raw.Area": raw_a_area_val,
                     "IS area": s_is_area, 
+                    "Raw.IS": raw_is_area_val,
                     "Calc.Conc.": conc, 
                     "Raw.Conc.": raw_conc_val,
                     "failed_ccqc": failed_ccqc
@@ -319,8 +330,8 @@ if st.button("Generate Dashboard"):
                 }
                 qc_file_data.append(q_dict)
                 
-            avg_row = {"Sample Name": "Average IS area of CC and QC", "Area": "", "IS area": avg_is_area, "Calc.Conc.": "", "Raw.Conc.": "", "% Accuracy": "", "failed_ccqc": False}
-            header_row = {"Sample Name": "Sample Name", "Area": "Area", "IS area": "IS area", "Calc.Conc.": "Calc.Conc.", "Raw.Conc.": "", "% Accuracy": "% IS", "failed_ccqc": False}
+            avg_row = {"Sample Name": "Average IS area of CC and QC", "Area": "", "IS area": avg_is_area, "Calc.Conc.": "", "% Accuracy": "", "failed_ccqc": False}
+            header_row = {"Sample Name": "Sample Name", "Area": "Area", "IS area": "IS area", "Calc.Conc.": "Calc.Conc.", "% Accuracy": "% IS", "failed_ccqc": False}
             
             final_rows = ccqc_rows + [avg_row, header_row] + sample_rows
             final_chart = ccqc_chart + [(np.nan, np.nan, np.nan, np.nan, np.nan), (np.nan, np.nan, np.nan, np.nan, np.nan)] + sample_chart
@@ -378,8 +389,7 @@ if st.button("Generate Dashboard"):
                 val = nominals.get(qc, "")
                 row_nom_qc[qc] = val
                 if val != "":
-                    # ALL QCs (including LQC) adhere to 15% tolerance per ICH M10
-                    limit = 0.15
+                    limit = 0.20 if qc == 'LQC' else 0.15
                     row_low_qc[qc] = val * (1 - limit)
                     row_up_qc[qc] = val * (1 + limit)
             qc_df = pd.concat([pd.DataFrame([row_nom_qc, row_low_qc, row_up_qc]), qc_df_data], ignore_index=True)
@@ -486,40 +496,54 @@ if st.button("Generate Dashboard"):
                         ws.write(r_idx, 4, row_dict.get("% Accuracy", "% Acc"), table_header_green)
                     else:
                         ws.write(r_idx, 0, row_dict["Sample Name"], data_white)
-                        ws.write(r_idx, 1, "" if pd.isna(row_dict["Area"]) else row_dict["Area"], data_white)
                         
-                        # Add suffix * and Yellow highlight to IS Area if CC/QC failed
-                        is_area_val = row_dict.get("IS area", "")
-                        is_failed = row_dict.get("failed_ccqc", False)
+                        # -- Area Parsing --
+                        a_display = ""
+                        if pd.notna(row_dict["Area"]):
+                            a_display = int(row_dict["Area"]) if isinstance(row_dict["Area"], float) and row_dict["Area"].is_integer() else row_dict["Area"]
+                        elif row_dict["Raw.Area"] != "" and row_dict["Raw.Area"].upper() != 'NAN':
+                            a_display = row_dict["Raw.Area"]
+                        ws.write(r_idx, 1, a_display, data_white)
                         
-                        if is_failed and pd.notna(is_area_val) and is_area_val != "":
-                            is_str = str(int(is_area_val)) if isinstance(is_area_val, float) and is_area_val.is_integer() else str(is_area_val)
-                            ws.write(r_idx, 2, f"{is_str}*", failed_ccqc_string_fmt)
-                        else:
-                            ws.write(r_idx, 2, "" if pd.isna(is_area_val) else is_area_val, data_white)
+                        # -- IS Area Parsing & Highlighting --
+                        is_display = ""
+                        if pd.notna(row_dict["IS area"]):
+                            is_display = int(row_dict["IS area"]) if isinstance(row_dict["IS area"], float) and row_dict["IS area"].is_integer() else row_dict["IS area"]
+                        elif row_dict["Raw.IS"] != "" and row_dict["Raw.IS"].upper() != 'NAN':
+                            is_display = row_dict["Raw.IS"]
                             
-                        # Conc Formatting - preserve raw strings if numeric conversion failed (like < 0, ND, etc)
-                        conc_val = row_dict.get("Calc.Conc.", np.nan)
-                        raw_conc = row_dict.get("Raw.Conc.", "")
-                        
-                        if pd.isna(conc_val) and pd.notna(raw_conc) and str(raw_conc).strip() != "" and str(raw_conc).strip().upper() != 'NAN':
-                            ws.write(r_idx, 3, str(raw_conc).strip(), data_white)
-                        elif pd.notna(conc_val) and isinstance(conc_val, (int, float)):
-                            if conc_val > uloq:
-                                ws.write(r_idx, 3, conc_val, data_yellow_float)
+                        if row_dict["failed_ccqc"] and is_display != "":
+                            ws.write(r_idx, 2, f"{is_display}*", failed_ccqc_string_fmt)
+                        else:
+                            ws.write(r_idx, 2, is_display, data_white)
+                            
+                        # -- Calc.Conc Parsing --
+                        c_display = ""
+                        if pd.notna(row_dict["Calc.Conc."]):
+                            c_display = row_dict["Calc.Conc."]
+                        elif row_dict["Raw.Conc."] != "" and row_dict["Raw.Conc."].upper() != 'NAN':
+                            c_display = row_dict["Raw.Conc."]
+                            
+                        if pd.notna(row_dict["Calc.Conc."]) and isinstance(c_display, (int, float)):
+                            if c_display > uloq:
+                                ws.write(r_idx, 3, c_display, data_yellow_float)
                             else:
-                                ws.write(r_idx, 3, conc_val, data_white_float)
+                                ws.write(r_idx, 3, c_display, data_white_float)
                         else:
-                            ws.write(r_idx, 3, "", data_white_float)
+                            ws.write(r_idx, 3, c_display, data_white)
                             
-                        # Add Yellow highlight to % Accuracy if CC/QC failed bounds
+                        # -- % Accuracy Parsing & Highlighting --
                         acc = row_dict.get("% Accuracy", "")
-                        if is_failed:
-                            if pd.isna(acc) or acc == "": ws.write(r_idx, 4, "", failed_ccqc_string_fmt)
-                            else: ws.write(r_idx, 4, acc, failed_ccqc_pct_fmt)
+                        if row_dict["failed_ccqc"]:
+                            if pd.isna(acc) or acc == "": 
+                                ws.write(r_idx, 4, "", failed_ccqc_string_fmt)
+                            else: 
+                                ws.write(r_idx, 4, acc, failed_ccqc_pct_fmt)
                         else:
-                            if pd.isna(acc) or acc == "": ws.write(r_idx, 4, "", data_white_pct)
-                            else: ws.write(r_idx, 4, acc, data_white_pct)
+                            if pd.isna(acc) or acc == "": 
+                                ws.write(r_idx, 4, "", data_white)
+                            else: 
+                                ws.write(r_idx, 4, acc, data_white_pct)
 
                     c_tuple = chart_data[r_idx]
                     ws.write(r_idx, 26, "" if pd.isna(c_tuple[0]) else c_tuple[0])
@@ -623,7 +647,6 @@ if st.button("Generate Dashboard"):
                             val = df_target.iloc[r-1, c]
                             col_name = df_target.columns[c]
                             
-                            # Standard formatting mapping
                             if target_sheet == "CC" and col_name in ['Slope', 'Intercept']:
                                 fmt = data_white
                             elif target_sheet == "CC" and col_name == 'r':
@@ -633,7 +656,6 @@ if st.button("Generate Dashboard"):
                             
                             out_val = "" if pd.isna(val) else val
                             
-                            # Check bounds logic for standard values only
                             if r > 3 and start_col <= c < end_col and pd.notna(val) and val != "":
                                 try:
                                     num_val = float(val)
