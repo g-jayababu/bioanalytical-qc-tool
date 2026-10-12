@@ -395,8 +395,11 @@ if st.button("Generate Final Concentration Tracker"):
                     tmax_time = tmax_row['Timepoint_Float']
                     
                     # 1. Cmax Selection Phase
-                    # Prioritize samples <= ULOQ
-                    cmax_cands = valid_group[valid_group['Final Conc'] <= uloq].sort_values(by='Final Conc', ascending=False)
+                    # Prioritize samples strictly < 95% of ULOQ
+                    limit_95_uloq = 0.95 * uloq if pd.notna(uloq) else float('inf')
+                    cmax_cands = valid_group[valid_group['Final Conc'] < limit_95_uloq].sort_values(by='Final Conc', ascending=False)
+                    
+                    # Fallback if no samples < 95% exist
                     if len(cmax_cands) < isr_cmax_count:
                         cmax_cands = valid_group.sort_values(by='Final Conc', ascending=False)
                         
@@ -450,8 +453,8 @@ if st.button("Generate Final Concentration Tracker"):
                 
             if isr_selection_rows:
                 df_isr = pd.DataFrame(isr_selection_rows)
-                df_isr['Sort_Subj'] = df_isr['Subject No.'].apply(extract_sort_num)
-                df_isr = df_isr.sort_values(by=['Sort_Subj', 'Period No.', 'Selection Phase', 'Timepoints'])
+                # Sort alphanumerically by Sample Name
+                df_isr = df_isr.sort_values(by='Sample Name', key=lambda col: col.map(natural_sort_key)).reset_index(drop=True)
                 
                 s_no = 1
                 for _, row in df_isr.iterrows():
