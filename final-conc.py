@@ -166,18 +166,18 @@ if st.button("Generate Final Concentration Tracker"):
             # Sort initial samples alphanumerically by their raw sample name
             sorted_samples = sorted(initial_samples.items(), key=lambda x: natural_sort_key(x[1][2]))
             
-            # Helper to map display values with BLQ Logic
+            # Helper to map display values with 0.000 Logic
             def get_display_val(conc_val, raw_str, current_lloq):
                 raw_clean = str(raw_str).strip()
                 
                 # Manual overrides for < 0
                 if raw_clean in ["< 0", "<0"]:
-                    return "BLQ", True
+                    return 0.0, False  # Returns numeric 0, is_string=False
                     
                 # Numeric evaluations against LLOQ
                 if pd.notna(conc_val) and isinstance(conc_val, (int, float)):
                     if pd.notna(current_lloq) and conc_val < current_lloq:
-                        return "BLQ", True
+                        return 0.0, False
                     return conc_val, False
                 
                 # Empty or missing states
@@ -233,10 +233,10 @@ if st.button("Generate Final Concentration Tracker"):
                 c_init_out, is_init_str = get_display_val(initial_conc, init_raw_str, lloq)
                 c_init_fmt = data_white if is_init_str else data_white_float
 
-                # Calculate % Difference (Suppressed if values are BLQ)
+                # Calculate % Difference (Suppressed if values are 0.0)
                 pct_diff = ""
-                if has_repeat and not is_init_str and not is_final_str and initial_conc > 0:
-                    pct_diff = ((final_conc - initial_conc) / ((initial_conc + final_conc) / 2)) * 100
+                if has_repeat and not is_init_str and not is_final_str and c_init_out > 0:
+                    pct_diff = ((c_final_out - c_init_out) / ((c_init_out + c_final_out) / 2)) * 100
 
                 # Write Row
                 ws_rep.write(row_idx, 0, subj, data_white)
