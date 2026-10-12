@@ -50,6 +50,10 @@ def extract_sort_num(val):
     nums = re.findall(r'\d+', str(val))
     return int(nums[-1]) if nums else 0
 
+def natural_sort_key(s):
+    """Splits string into text and numbers for true alphanumerical sorting (e.g., S-2 before S-10)"""
+    return [int(text) if text.isdigit() else text.lower() for text in re.split(r'(\d+)', str(s))]
+
 def get_base_name(name):
     # Removes -R, -R1, -ISR, _ISR, etc. to universally match initial samples
     if not isinstance(name, str): return str(name)
@@ -205,7 +209,6 @@ if st.button("Generate Dashboard"):
             ccqc_chart.append((np.nan, np.nan, np.nan, np.nan, np.nan))
             
             for index, row in df.iterrows():
-                # Preserve raw string formatting exactly as it comes from the machine
                 s_name_raw = str(row[name_col]).strip()
                 s_name_up = s_name_raw.upper()
                 s_type_up = str(row[type_col]).strip().upper()
@@ -222,6 +225,7 @@ if st.button("Generate Dashboard"):
                 raw_acc_val = str(row[acc_col]).strip() if acc_col else ""
                 acc_val = pd.to_numeric(raw_acc_val, errors='coerce') if raw_acc_val != "" else np.nan
                 
+                # Flag if a CC or QC failed ICH M10 bounds dynamically
                 failed_ccqc = False
                 if 'STANDARD' in s_type_up or 'QC' in s_type_up or 'QUALITY' in s_type_up:
                     if pd.notna(acc_val):
@@ -360,7 +364,7 @@ if st.button("Generate Dashboard"):
         # -- 1. Repeats Sheet Sorted Ascending by Sample Name --
         if all_repeats_data:
             rep_df = pd.DataFrame(all_repeats_data)
-            rep_df = rep_df.sort_values(by='Sample Name', ascending=True).reset_index(drop=True)
+            rep_df = rep_df.sort_values(by='Sample Name', key=lambda col: col.map(natural_sort_key)).reset_index(drop=True)
             excel_tabs["Repeats"] = rep_df
         else:
             excel_tabs["Repeats"] = pd.DataFrame([{"Batch Name": "-", "Sample Name": "-", "Concentration": "-", "Reason Code": "No Repeats Required"}])
@@ -378,10 +382,10 @@ if st.button("Generate Dashboard"):
         for s_name_raw, (conc, isr_file) in isr_samples.items():
             base_to_isr[get_base_name(s_name_raw).upper()] = (conc, s_name_raw, isr_file)
 
-        # -- 2. Build Repeat Analysis Tab --
+        # -- 2. Build Repeat Analysis Tab (Sorted Alphanumerically) --
         repeat_analysis_rows = []
         s_no = 1
-        sorted_repeats = sorted(base_to_repeat.items(), key=lambda x: x[1][1])
+        sorted_repeats = sorted(base_to_repeat.items(), key=lambda x: natural_sort_key(x[1][1]))
         for base_up, (rep_conc, rep_s_name_raw, rep_file) in sorted_repeats:
             init_conc, init_s_name_raw, orig_file = base_to_initial.get(base_up, (np.nan, "Missing", "Unknown"))
             
@@ -405,10 +409,10 @@ if st.button("Generate Dashboard"):
         else:
             excel_tabs["Repeat Analysis"] = pd.DataFrame([{"S.No": "-", "Initial File Name": "-", "Repeat File Name": "-", "Sample Name": "-", "Initial Concentration": "-", "Repeat Concentration": "-", "% Difference": "-"}])
             
-        # -- 3. Build ISR Analysis Tab --
+        # -- 3. Build ISR Analysis Tab (Sorted Alphanumerically) --
         isr_analysis_rows = []
         s_no_isr = 1
-        sorted_isr = sorted(base_to_isr.items(), key=lambda x: x[1][1])
+        sorted_isr = sorted(base_to_isr.items(), key=lambda x: natural_sort_key(x[1][1]))
         for base_up, (isr_conc, isr_s_name_raw, isr_file) in sorted_isr:
             init_conc, init_s_name_raw, orig_file = base_to_initial.get(base_up, (np.nan, "Missing", "Unknown"))
             
@@ -782,6 +786,24 @@ if st.button("Generate Dashboard"):
                         ws.conditional_format(data_range, {'type': 'formula', 'criteria': f"=AND(ISNUMBER({col_letter}5), OR({col_letter}5<{col_letter}$3, {col_letter}5>{col_letter}$4))", 'format': yellow_flag})
 
             # --- CONCENTRATION DATA TABS (INITIAL & REPEATS) ---
+            mapped_samples = {}
+            if num_subj > 0 and periods_list and timepoints_list:
+                for s_name, (conc, orig_file) in global_samples.items():
+                    parts = re.split(r'[-_]', s_name)
+                    subj_str = parts[0] if len(parts) > 0 else s_name
+                    period_str = parts[1] if len(parts) > 1 else ""
+                    tp_str = parts[2] if len(parts) > 2 else ""
+                    
+                    subj_nums = re.findall(r'\d+', subj_str)
+                    subj_int = int(subj_nums[-1]) if subj_nums else 0
+                    period_clean = period_str.strip().upper()
+                    
+                    tp_nums = re.findall(r'\d+\.\d+|\d+', tp_str)
+                    tp_float = float(tp_nums[0]) if tp_nums else -1.0
+                    if "PRE" in tp_str.upper(): tp_float = -1.0
+                    
+                    mapped_samples[(subj_int, period_clean, tp_float)] = (conc, s_name, orig_file)
+            
             ws_conc = workbook.add_worksheet("Concentration Data")
             ws_conc.set_column('A:B', 15, general_fmt)
             ws_conc.set_column('C:C', 15, general_fmt)
@@ -793,7 +815,6 @@ if st.button("Generate Dashboard"):
                 
             row_idx = 1
             if num_subj > 0 and periods_list and timepoints_list:
-                # Setup-driven iteration
                 for subj_idx in range(1, num_subj + 1):
                     subj_formatted = f"S{subj_idx:03d}"
                     for period_val in periods_list:
@@ -803,46 +824,26 @@ if st.button("Generate Dashboard"):
                             tp_float = float(tp_nums[0]) if tp_nums else -1.0
                             if "PRE" in str(tp_val).upper(): tp_float = -1.0
                             
-                            # Search the global dict to see if this subject/period/tp exists
-                            found_match = False
-                            for base_up, (initial_conc, s_name_raw, orig_file) in base_to_initial.items():
-                                parts = re.split(r'[-_]', s_name_raw)
-                                subj_str = parts[0] if len(parts) > 0 else s_name_raw
-                                p_str = parts[1] if len(parts) > 1 else ""
-                                t_str = parts[2] if len(parts) > 2 else ""
+                            lookup_key = (subj_idx, period_clean, tp_float)
+                            if lookup_key in mapped_samples:
+                                conc, real_s_name, orig_file = mapped_samples[lookup_key]
+                                display_conc = "BLQ" if (pd.isna(conc) or (pd.notna(lloq) and conc < lloq)) else conc
+                                s_name_out = real_s_name
+                            else:
+                                display_conc = "M"
+                                s_name_out = "Missing"
                                 
-                                s_nums = re.findall(r'\d+', subj_str)
-                                s_int = int(s_nums[-1]) if s_nums else 0
-                                p_clean = p_str.strip().upper()
-                                
-                                t_nums = re.findall(r'\d+\.\d+|\d+', t_str)
-                                t_flt = float(t_nums[0]) if t_nums else -1.0
-                                if "PRE" in t_str.upper(): t_flt = -1.0
-                                
-                                if s_int == subj_idx and p_clean == period_clean and t_flt == tp_float:
-                                    display_conc = "BLQ" if (pd.isna(initial_conc) or (pd.notna(lloq) and initial_conc < lloq)) else initial_conc
-                                    ws_conc.write(row_idx, 0, subj_formatted, data_white)
-                                    ws_conc.write(row_idx, 1, period_val, data_white)
-                                    ws_conc.write(row_idx, 2, f"'{tp_val}", data_white)
-                                    ws_conc.write(row_idx, 3, display_conc, data_white if display_conc in ["BLQ", "M"] else data_white_float)
-                                    ws_conc.write(row_idx, 4, s_name_raw, data_white)
-                                    found_match = True
-                                    break
-                                    
-                            if not found_match:
-                                ws_conc.write(row_idx, 0, subj_formatted, data_white)
-                                ws_conc.write(row_idx, 1, period_val, data_white)
-                                ws_conc.write(row_idx, 2, f"'{tp_val}", data_white)
-                                ws_conc.write(row_idx, 3, "M", data_white)
-                                ws_conc.write(row_idx, 4, "Missing", data_white)
-                                
+                            ws_conc.write(row_idx, 0, subj_formatted, data_white)
+                            ws_conc.write(row_idx, 1, period_val, data_white)
+                            ws_conc.write(row_idx, 2, f"'{tp_val}", data_white)
+                            ws_conc.write(row_idx, 3, display_conc, data_white if display_conc in ["BLQ", "M"] else data_white_float)
+                            ws_conc.write(row_idx, 4, s_name_out, data_white)
                             row_idx += 1
             else:
-                # Unstructured Iteration
-                for s_name_raw, (conc, orig_file) in sorted(global_samples.items(), key=lambda x: extract_sort_num(x[0])):
+                for s_name, (conc, orig_file) in sorted(global_samples.items(), key=lambda x: extract_sort_num(x[0])):
                     display_conc = "BLQ" if (pd.isna(conc) or (pd.notna(lloq) and conc < lloq)) else conc
-                    parts = re.split(r'[-_]', s_name_raw)
-                    subj = parts[0] if len(parts) > 0 else s_name_raw
+                    parts = re.split(r'[-_]', s_name)
+                    subj = parts[0] if len(parts) > 0 else s_name
                     period = parts[1] if len(parts) > 1 else ""
                     timep = parts[2] if len(parts) > 2 else ""
                     if subj.startswith('S') and subj[1:].isdigit(): subj = f"S{int(subj[1:]):03d}"
@@ -851,7 +852,7 @@ if st.button("Generate Dashboard"):
                     ws_conc.write(row_idx, 1, period, data_white)
                     ws_conc.write(row_idx, 2, f"'{timep}", data_white)
                     ws_conc.write(row_idx, 3, display_conc, data_white if display_conc == "BLQ" else data_white_float)
-                    ws_conc.write(row_idx, 4, s_name_raw, data_white)
+                    ws_conc.write(row_idx, 4, s_name, data_white)
                     row_idx += 1
 
             if repeat_files:
