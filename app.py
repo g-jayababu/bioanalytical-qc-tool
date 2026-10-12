@@ -200,17 +200,18 @@ if st.button("Generate Dashboard"):
                 a_area = pd.to_numeric(row[analyte_area_col], errors='coerce') if analyte_area_col else np.nan
                 acc_val = pd.to_numeric(row[acc_col], errors='coerce') if acc_col else np.nan
                 
-                # Flag if a CC or QC failed its bounds
+                # Flag if a CC or QC failed ICH M10 bounds dynamically
                 failed_ccqc = False
                 if 'STANDARD' in s_type or 'QC' in s_type or 'QUALITY' in s_type:
                     if pd.notna(acc_val):
-                        if 'STANDARD' in s_type or 'STD' in s_name:
-                            if ('-A' in s_name or '-1' in s_name) and not (80 <= acc_val <= 120): failed_ccqc = True
-                            elif ('-A' not in s_name and '-1' not in s_name) and not (85 <= acc_val <= 115): failed_ccqc = True
-                        elif 'LQC' in s_name and not (80 <= acc_val <= 120): failed_ccqc = True
-                        elif ('MQC' in s_name or 'MMQC' in s_name or 'HQC' in s_name) and not (85 <= acc_val <= 115): failed_ccqc = True
+                        # LLOQ Standard (STD-A or STD-1) limits: 80 - 120
+                        if ('STANDARD' in s_type or 'STD' in s_name) and ('-A' in s_name or '-1' in s_name):
+                            if not (80 <= acc_val <= 120): failed_ccqc = True
+                        # ALL other Standards and QCs limits: 85 - 115
+                        else:
+                            if not (85 <= acc_val <= 115): failed_ccqc = True
                     else:
-                        failed_ccqc = True # Failed because there is no valid accuracy calculated
+                        failed_ccqc = True
                 
                 if ('STD-A' in s_name or '-1' in s_name) and std_a_area is None: std_a_area = a_area
                 if ('ZERO' in s_name or 'AQSTD' in s_name or '+IS' in s_name) and std_zero_is_area is None: std_zero_is_area = s_is_area
@@ -219,8 +220,8 @@ if st.button("Generate Dashboard"):
                 if pd.notna(acc_val):
                     if 'STANDARD' in s_type or 'STD' in s_name:
                         if ('-A' in s_name or '-1' in s_name) and 80 <= acc_val <= 120: cc_pass += 1
-                        elif 85 <= acc_val <= 115: cc_pass += 1
-                    if 'LQC' in s_name and 80 <= acc_val <= 120: lqc_pass += 1
+                        elif ('-A' not in s_name and '-1' not in s_name) and 85 <= acc_val <= 115: cc_pass += 1
+                    if 'LQC' in s_name and 85 <= acc_val <= 115: lqc_pass += 1
                     if 'MMQC' in s_name and 85 <= acc_val <= 115: mmqc_pass += 1
                     if 'MQC' in s_name and 'MMQC' not in s_name and 85 <= acc_val <= 115: mqc_pass += 1
                     if 'HQC' in s_name and 85 <= acc_val <= 115: hqc_pass += 1
@@ -377,7 +378,8 @@ if st.button("Generate Dashboard"):
                 val = nominals.get(qc, "")
                 row_nom_qc[qc] = val
                 if val != "":
-                    limit = 0.20 if qc == 'LQC' else 0.15
+                    # ALL QCs (including LQC) adhere to 15% tolerance per ICH M10
+                    limit = 0.15
                     row_low_qc[qc] = val * (1 - limit)
                     row_up_qc[qc] = val * (1 + limit)
             qc_df = pd.concat([pd.DataFrame([row_nom_qc, row_low_qc, row_up_qc]), qc_df_data], ignore_index=True)
@@ -421,6 +423,7 @@ if st.button("Generate Dashboard"):
             table_header_gray = workbook.add_format({**tnr, 'bold': True, 'bg_color': '#D9D9D9', 'border': 1, 'align': 'center', 'valign': 'vcenter'})
             
             failed_ccqc_string_fmt = workbook.add_format({**tnr, 'bg_color': '#FFFF00', 'bold': True, 'font_color': '#000000', 'border': 1, 'align': 'center', 'valign': 'vcenter'})
+            failed_ccqc_pct_fmt = workbook.add_format({**tnr, 'bg_color': '#FFFF00', 'bold': True, 'font_color': '#000000', 'border': 1, 'align': 'center', 'valign': 'vcenter', 'num_format': '0.00'})
             failed_ccqc_float_fmt = workbook.add_format({**tnr, 'bg_color': '#FFFF00', 'bold': True, 'font_color': '#000000', 'border': 1, 'align': 'center', 'valign': 'vcenter', 'num_format': '0.000'})
 
             for sheet_name in ["Summary", "Repeats", "CC", "QC"]:
@@ -485,33 +488,38 @@ if st.button("Generate Dashboard"):
                         ws.write(r_idx, 0, row_dict["Sample Name"], data_white)
                         ws.write(r_idx, 1, "" if pd.isna(row_dict["Area"]) else row_dict["Area"], data_white)
                         
-                        # Add suffix * to IS Area if CC/QC failed
+                        # Add suffix * and Yellow highlight to IS Area if CC/QC failed
                         is_area_val = row_dict.get("IS area", "")
-                        if row_dict.get("failed_ccqc", False) and pd.notna(is_area_val) and is_area_val != "":
-                            # Format integers safely before appending string
+                        is_failed = row_dict.get("failed_ccqc", False)
+                        
+                        if is_failed and pd.notna(is_area_val) and is_area_val != "":
                             is_str = str(int(is_area_val)) if isinstance(is_area_val, float) and is_area_val.is_integer() else str(is_area_val)
-                            ws.write(r_idx, 2, f"{is_str}*", data_white)
+                            ws.write(r_idx, 2, f"{is_str}*", failed_ccqc_string_fmt)
                         else:
                             ws.write(r_idx, 2, "" if pd.isna(is_area_val) else is_area_val, data_white)
                             
-                        # Preserve string text for missing/invalid concentrations instead of leaving blank
+                        # Conc Formatting - preserve raw strings if numeric conversion failed (like < 0, ND, etc)
                         conc_val = row_dict.get("Calc.Conc.", np.nan)
                         raw_conc = row_dict.get("Raw.Conc.", "")
                         
-                        if pd.notna(conc_val) and isinstance(conc_val, (int, float)):
+                        if pd.isna(conc_val) and pd.notna(raw_conc) and str(raw_conc).strip() != "" and str(raw_conc).strip().upper() != 'NAN':
+                            ws.write(r_idx, 3, str(raw_conc).strip(), data_white)
+                        elif pd.notna(conc_val) and isinstance(conc_val, (int, float)):
                             if conc_val > uloq:
                                 ws.write(r_idx, 3, conc_val, data_yellow_float)
                             else:
                                 ws.write(r_idx, 3, conc_val, data_white_float)
                         else:
-                            if pd.notna(raw_conc) and str(raw_conc).strip().upper() not in ['NAN', 'NONE', '']:
-                                ws.write(r_idx, 3, str(raw_conc), data_white)
-                            else:
-                                ws.write(r_idx, 3, "", data_white_float)
+                            ws.write(r_idx, 3, "", data_white_float)
                             
+                        # Add Yellow highlight to % Accuracy if CC/QC failed bounds
                         acc = row_dict.get("% Accuracy", "")
-                        if pd.isna(acc) or acc == "": ws.write(r_idx, 4, "", data_white_pct)
-                        else: ws.write(r_idx, 4, acc, data_white_pct)
+                        if is_failed:
+                            if pd.isna(acc) or acc == "": ws.write(r_idx, 4, "", failed_ccqc_string_fmt)
+                            else: ws.write(r_idx, 4, acc, failed_ccqc_pct_fmt)
+                        else:
+                            if pd.isna(acc) or acc == "": ws.write(r_idx, 4, "", data_white_pct)
+                            else: ws.write(r_idx, 4, acc, data_white_pct)
 
                     c_tuple = chart_data[r_idx]
                     ws.write(r_idx, 26, "" if pd.isna(c_tuple[0]) else c_tuple[0])
