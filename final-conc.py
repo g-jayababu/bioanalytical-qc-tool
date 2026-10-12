@@ -54,6 +54,11 @@ def load_data(file):
                     except Exception as e4: return None, f"Failed all formats. Last error: {str(e4)}"
     return None, "Unsupported file extension."
 
+def extract_sort_num(val):
+    """Extracts numeric portion for basic sorting"""
+    nums = re.findall(r'\d+', str(val))
+    return int(nums[-1]) if nums else 0
+
 def natural_sort_key(s):
     """Splits string into text and numbers for true alphanumerical sorting"""
     return [int(text) if text.isdigit() else text.lower() for text in re.split(r'(\d+)', str(s))]
