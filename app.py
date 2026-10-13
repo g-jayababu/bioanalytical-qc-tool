@@ -8,17 +8,26 @@ from xlsxwriter.utility import xl_col_to_name
 st.set_page_config(layout="wide")
 st.title("Bioanalytical Auto-QC Dashboard")
 
+# Initialize session state for the file uploaders to allow clearing
+if "uploader_key" not in st.session_state:
+    st.session_state.uploader_key = 0
+
+def clear_files():
+    st.session_state.uploader_key += 1
+
 st.header("1. Upload Files")
 
 col1, col2, col3, col4 = st.columns(4)
 with col1:
-    setup_file = st.file_uploader("Upload Setup Excel File", type=["xls", "xlsx", "xlsm"])
+    setup_file = st.file_uploader("Upload Setup Excel File", type=["xls", "xlsx", "xlsm"], key=f"setup_{st.session_state.uploader_key}")
 with col2:
-    uploaded_files = st.file_uploader("Upload TSQ Quantis Plus Export Files", type=["csv", "xls", "xlsx"], accept_multiple_files=True)
+    uploaded_files = st.file_uploader("Upload TSQ Quantis Plus Export Files", type=["csv", "xls", "xlsx"], accept_multiple_files=True, key=f"main_{st.session_state.uploader_key}")
 with col3:
-    repeat_files = st.file_uploader("Upload Repeat Files (Optional)", type=["csv", "xls", "xlsx"], accept_multiple_files=True)
+    repeat_files = st.file_uploader("Upload Repeat Files (Optional)", type=["csv", "xls", "xlsx"], accept_multiple_files=True, key=f"repeat_{st.session_state.uploader_key}")
 with col4:
-    isr_files = st.file_uploader("Upload ISR Files (Optional)", type=["csv", "xls", "xlsx"], accept_multiple_files=True)
+    isr_files = st.file_uploader("Upload ISR Files (Optional)", type=["csv", "xls", "xlsx"], accept_multiple_files=True, key=f"isr_{st.session_state.uploader_key}")
+
+st.button("🧹 Clear All Uploaded Files", on_click=clear_files)
 
 def load_data(file):
     file_name_lower = file.name.lower()
