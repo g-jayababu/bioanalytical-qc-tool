@@ -107,6 +107,7 @@ if st.button("Generate Dashboard"):
         global_samples = {}
         batch_meta_data = {}
         all_repeats_data = [] 
+        all_interference_data = [] 
         repeat_samples = {}
         isr_samples = {}
         
@@ -336,6 +337,22 @@ if st.button("Generate Dashboard"):
                 for smp in above_uloq:
                     all_repeats_data.append({"Batch Name": safe_sheet_name, "Sample Name": smp['name'], "Concentration": smp['conc'], "Reason Code": "Above ULOQ"})
             
+            # --- COLLECT DATA FOR GLOBAL INTERFERENCE CALCULATION SHEET ---
+            for smp in carryover_samples:
+                a_area = smp['a_area']
+                is_area = smp['is_area']
+                pct_a = (a_area / std_a_area) * 100 if std_a_area and pd.notna(a_area) and std_a_area > 0 else np.nan
+                pct_is = (is_area / std_zero_is_area) * 100 if std_zero_is_area and pd.notna(is_area) and std_zero_is_area > 0 else np.nan
+                
+                all_interference_data.append({
+                    "Batch Name": safe_sheet_name,
+                    "Sample name": smp['name'],
+                    "Analyte Area": a_area if pd.notna(a_area) else "",
+                    "IS area": is_area if pd.notna(is_area) else "",
+                    "% analyte": pct_a if pd.notna(pct_a) else "NA",
+                    "% IS": pct_is if pd.notna(pct_is) else "NA"
+                })
+
             for i in range(4):
                 q_dict = {
                     'Date of first injection': acq_date if i==0 else "", 'SUBJECT ID': subj_id if i==0 else "",
@@ -369,6 +386,12 @@ if st.button("Generate Dashboard"):
             })
 
         excel_tabs["Summary"] = pd.DataFrame(summary_log)
+        
+        # -- Global Interference Sheet Creation --
+        if all_interference_data:
+            excel_tabs["Interference calculation"] = pd.DataFrame(all_interference_data)
+        else:
+            excel_tabs["Interference calculation"] = pd.DataFrame([{"Batch Name": "-", "Sample name": "-", "Analyte Area": "-", "IS area": "-", "% analyte": "-", "% IS": "-"}])
         
         # -- 1. Repeats Sheet Sorted Ascending by Sample Name --
         if all_repeats_data:
@@ -486,7 +509,7 @@ if st.button("Generate Dashboard"):
         output = io.BytesIO()
         with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
             
-            for sh_name in ["Summary", "Repeats", "Repeat Analysis", "ISR Analysis", "CC", "QC"]:
+            for sh_name in ["Summary", "Interference calculation", "Repeats", "Repeat Analysis", "ISR Analysis", "CC", "QC"]:
                 if sh_name in excel_tabs:
                     excel_tabs[sh_name].to_excel(writer, sheet_name=sh_name, index=False)
             
@@ -522,7 +545,7 @@ if st.button("Generate Dashboard"):
             failed_ccqc_pct_fmt = workbook.add_format({**tnr, 'bg_color': '#FFFF00', 'bold': True, 'font_color': '#000000', 'border': 1, 'align': 'center', 'valign': 'vcenter', 'num_format': '0.00'})
             failed_ccqc_float_fmt = workbook.add_format({**tnr, 'bg_color': '#FFFF00', 'bold': True, 'font_color': '#000000', 'border': 1, 'align': 'center', 'valign': 'vcenter', 'num_format': '0.000'})
 
-            for sheet_name in ["Summary", "Repeats", "Repeat Analysis", "ISR Analysis", "CC", "QC"]:
+            for sheet_name in ["Summary", "Interference calculation", "Repeats", "Repeat Analysis", "ISR Analysis", "CC", "QC"]:
                 if sheet_name in excel_tabs:
                     df_tab = excel_tabs[sheet_name]
                     worksheet = writer.sheets[sheet_name]
@@ -534,6 +557,11 @@ if st.button("Generate Dashboard"):
                         for row_num, row_data in enumerate(df_tab.values):
                             row_fmt = success_fmt if row_data[1] == "SUCCESS" else failed_fmt
                             for col_num, value in enumerate(row_data): worksheet.write(row_num + 1, col_num, value, row_fmt)
+                            
+                    elif sheet_name == "Interference calculation":
+                        worksheet.set_column('A:B', 30, general_fmt)
+                        worksheet.set_column('C:D', 15, general_fmt)
+                        worksheet.set_column('E:F', 15, pct_fmt)
                     
                     elif sheet_name == "Repeats":
                         worksheet.set_column('B:B', 30, general_fmt)
