@@ -193,8 +193,8 @@ if st.button("Generate Dashboard"):
             seen_ccqc, seen_samples = set(), set()
             
             std_a_area, std_zero_is_area = None, None
-            cc_pass, lqc_pass, mmqc_pass, mqc_pass, hqc_pass = 0, 0, 0, 0, 0
-            cc_total, lqc_total, mmqc_total, mqc_total, hqc_total = 0, 0, 0, 0, 0
+            cc_pass, cc_total = 0, 0
+            lqc_list_objs, mmqc_list_objs, mqc_list_objs, hqc_list_objs = [], [], [], []
             failed_cc_ids = []
             
             out_of_range_is, above_uloq = [], []
@@ -262,7 +262,7 @@ if st.button("Generate Dashboard"):
                 if ('ZERO' in s_name_up or 'AQSTD' in s_name_up or '+IS' in s_name_up) and std_zero_is_area is None: std_zero_is_area = s_is_area
                 if 'BLANK' in s_type_up or 'BLK' in s_name_up or 'MOBILE' in s_name_up: carryover_samples.append({'name': s_name_raw, 'a_area': a_area, 'is_area': s_is_area})
                 
-                if 'STANDARD' in s_type_up or 'STD' in s_name_up:
+               if ('STANDARD' in s_type_up or 'STD' in s_name_up) and 'BLK' not in s_name_up and 'ZERO' not in s_name_up and 'AQSTD' not in s_name_up:
                     cc_total += 1
                     if pd.notna(acc_val):
                         if ('-A' in s_name_up or '-1' in s_name_up) and 80 <= acc_val <= 120: cc_pass += 1
@@ -271,17 +271,13 @@ if st.button("Generate Dashboard"):
                     else: failed_cc_ids.append(s_name_raw)
                 
                 if 'LQC' in s_name_up:
-                    lqc_total += 1
-                    if pd.notna(acc_val) and 85 <= acc_val <= 115: lqc_pass += 1
+                    lqc_list_objs.append({'name': s_name_raw, 'pass': pd.notna(acc_val) and 85 <= acc_val <= 115})
                 if 'MMQC' in s_name_up:
-                    mmqc_total += 1
-                    if pd.notna(acc_val) and 85 <= acc_val <= 115: mmqc_pass += 1
+                    mmqc_list_objs.append({'name': s_name_raw, 'pass': pd.notna(acc_val) and 85 <= acc_val <= 115})
                 if 'MQC' in s_name_up and 'MMQC' not in s_name_up:
-                    mqc_total += 1
-                    if pd.notna(acc_val) and 85 <= acc_val <= 115: mqc_pass += 1
+                    mqc_list_objs.append({'name': s_name_raw, 'pass': pd.notna(acc_val) and 85 <= acc_val <= 115})
                 if 'HQC' in s_name_up:
-                    hqc_total += 1
-                    if pd.notna(acc_val) and 85 <= acc_val <= 115: hqc_pass += 1
+                    hqc_list_objs.append({'name': s_name_raw, 'pass': pd.notna(acc_val) and 85 <= acc_val <= 115})
                 
                 if pd.notna(s_is_area) and ('STANDARD' in s_type_up or 'QC' in s_type_up or 'UNKNOWN' in s_type_up):
                     if s_is_area < lower_is_limit or s_is_area > upper_is_limit:
