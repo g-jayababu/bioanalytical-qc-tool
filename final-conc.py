@@ -181,7 +181,8 @@ if st.button("Generate Final Concentration Tracker"):
                         mismatch_entry = {
                             "File Name": file.name,
                             "Sample Name": s_name_raw,
-                            "Extracted Timepoint": tp_str if tp_str else "Missing/Malformed"
+                            "Extracted Timepoint": tp_str if tp_str else "Missing/Malformed",
+                            "Concentration": raw_conc_val
                         }
                         if mismatch_entry not in mismatches_list:
                             mismatches_list.append(mismatch_entry)
@@ -508,22 +509,33 @@ if st.button("Generate Final Concentration Tracker"):
             ws_mis.set_column('A:A', 35, general_fmt)
             ws_mis.set_column('B:B', 30, general_fmt)
             ws_mis.set_column('C:C', 25, general_fmt)
+            ws_mis.set_column('D:D', 20, general_fmt)
             
-            mis_headers = ["File Name", "Sample Name", "Extracted Timepoint"]
+            mis_headers = ["File Name", "Sample Name", "Extracted Timepoint", f"Concentration({unit})"]
             for col_num, header in enumerate(mis_headers):
                 ws_mis.write(0, col_num, header, table_header_green)
                 
             if mismatches_list:
                 df_mis = pd.DataFrame(mismatches_list)
-                df_mis = df_mis.sort_values(by=["File Name", "Sample Name"]).reset_index(drop=True)
+                # Alphanumerical sorting by Sample Name
+                df_mis = df_mis.sort_values(by='Sample Name', key=lambda col: col.map(natural_sort_key)).reset_index(drop=True)
                 for r_idx, row in df_mis.iterrows():
                     ws_mis.write(r_idx + 1, 0, row["File Name"], data_white)
                     ws_mis.write(r_idx + 1, 1, row["Sample Name"], data_white)
                     ws_mis.write(r_idx + 1, 2, row["Extracted Timepoint"], data_white)
+                    
+                    # Output concentration safely as float if possible
+                    conc_val = row["Concentration"]
+                    try:
+                        num_val = float(conc_val)
+                        ws_mis.write(r_idx + 1, 3, num_val, data_white_float)
+                    except ValueError:
+                        ws_mis.write(r_idx + 1, 3, conc_val, data_white)
             else:
                 ws_mis.write(1, 0, "-", data_white)
                 ws_mis.write(1, 1, "-", data_white)
                 ws_mis.write(1, 2, "No Mismatches Found", data_white)
+                ws_mis.write(1, 3, "-", data_white)
 
         st.download_button(
             label="Download Final Concentration Tracker",
