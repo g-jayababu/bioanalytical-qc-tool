@@ -74,6 +74,8 @@ if st.button("Generate Final Concentration Tracker"):
     elif uploaded_files:
         st.success("Files received! Processing concentration data...")
         
+        expected_tps = set()
+        
         # Parse Setup File Data
         try:
             setup_df = pd.read_excel(setup_file, header=None, engine='openpyxl')
@@ -87,6 +89,13 @@ if st.button("Generate Final Concentration Tracker"):
             
             periods_list = [p.strip() for p in periods_str.split(',')] if periods_str else []
             timepoints_list = [tp.strip() for tp in timepoints_str.split(',')] if timepoints_str else []
+            
+            # Map expected timepoints to float values for strict validation
+            for tp_val in timepoints_list:
+                t_nums = re.findall(r'\d+\.\d+|\d+', str(tp_val))
+                tp_flt = float(t_nums[0]) if t_nums else -1.0
+                if "PRE" in str(tp_val).upper(): tp_flt = -1.0
+                expected_tps.add(tp_flt)
             
             lloq = pd.to_numeric(setup_df.iloc[5, 1], errors='coerce')
             uloq = pd.to_numeric(setup_df.iloc[6, 1], errors='coerce')
@@ -110,6 +119,7 @@ if st.button("Generate Final Concentration Tracker"):
             
         initial_samples = {}
         repeat_samples = {}
+        mismatches_list = []
         
         combined_files = [(f, "Main") for f in uploaded_files]
         if repeat_files: combined_files.extend([(f, "Repeat") for f in repeat_files])
@@ -159,6 +169,23 @@ if st.button("Generate Final Concentration Tracker"):
                 if 'UNKNOWN' in s_type_up and 'AQSTD' not in s_name_up and 'BLK' not in s_name_up and '+IS' not in s_name_up and 'BLANK' not in s_name_up:
                     base_up = get_base_name(s_name_raw).upper()
                     
+                    # --- TIMEPOINT MISMATCH VALIDATION ---
+                    parts = re.split(r'[-_]', s_name_raw)
+                    tp_str = parts[2] if len(parts) > 2 else ""
+                    t_nums = re.findall(r'\d+\.\d+|\d+', tp_str)
+                    tp_float = float(t_nums[0]) if t_nums else -1.0
+                    if "PRE" in tp_str.upper(): tp_float = -1.0
+                    
+                    # Compare extracted timepoint against setup expected timepoints
+                    if expected_tps and (tp_float not in expected_tps):
+                        mismatch_entry = {
+                            "File Name": file.name,
+                            "Sample Name": s_name_raw,
+                            "Extracted Timepoint": tp_str if tp_str else "Missing/Malformed"
+                        }
+                        if mismatch_entry not in mismatches_list:
+                            mismatches_list.append(mismatch_entry)
+                    
                     if file_category == "Main":
                         initial_samples[base_up] = (conc, raw_conc_val, s_name_raw)
                     elif file_category == "Repeat":
@@ -199,15 +226,14 @@ if st.button("Generate Final Concentration Tracker"):
 
             mapped_repeat[(subj_int, period_clean, tp_float)] = (conc, raw_conc_val, s_name_raw)
 
-        # --- MASTER DATA LIST FOR ISR SELECTION ---
         master_data_list = []
 
         # --- EXPORT TO EXCEL ---
         output = io.BytesIO()
         with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
             workbook = writer.book
-            ws_rep = workbook.add_worksheet("Final Conc After Repeat")
             
+            # Formatting
             tnr = {'font_name': 'Times New Roman', 'font_size': 10}
             table_header_green = workbook.add_format({**tnr, 'bold': True, 'bg_color': '#C6E0B4', 'border': 1, 'align': 'center', 'valign': 'vcenter'})
             data_white = workbook.add_format({**tnr, 'bg_color': '#FFFFFF', 'border': 1, 'align': 'center', 'valign': 'vcenter'})
@@ -217,6 +243,10 @@ if st.button("Generate Final Concentration Tracker"):
             conc_fmt = workbook.add_format({**tnr, 'num_format': '0.000', 'align': 'center', 'valign': 'vcenter'})
             pct_fmt = workbook.add_format({**tnr, 'num_format': '0.00', 'align': 'center', 'valign': 'vcenter'})
 
+            # -----------------------------------------------------------------
+            # 1. FINAL CONC AFTER REPEAT SHEET
+            # -----------------------------------------------------------------
+            ws_rep = workbook.add_worksheet("Final Conc After Repeat")
             ws_rep.set_column('A:B', 15, general_fmt)
             ws_rep.set_column('C:C', 15, general_fmt)
             ws_rep.set_column('D:D', 20, conc_fmt)
@@ -377,14 +407,14 @@ if st.button("Generate Final Concentration Tracker"):
                     })
                     row_idx += 1
 
-            # --- PROCESS ISR SELECTION LOGIC ---
+            # -----------------------------------------------------------------
+            # 2. ISR SELECTION SHEET
+            # -----------------------------------------------------------------
             isr_selection_rows = []
             df_master = pd.DataFrame(master_data_list)
             
             if not df_master.empty:
-                # Group by Subject and Period
                 for (s, p), group in df_master.groupby(['Subj', 'Period']):
-                    # Filter valid, quantifiable, non-repeated samples
                     valid_group = group[(group['Is Repeated'] == False) & (group['Final Conc'] > 0)].copy()
                     if valid_group.empty: continue
                     
@@ -394,26 +424,19 @@ if st.button("Generate Final Concentration Tracker"):
                     tmax_row = valid_group.loc[tmax_idx]
                     tmax_time = tmax_row['Timepoint_Float']
                     
-                    # 1. Cmax Selection Phase
-                    # EXCLUDE true Cmax from candidates
                     cmax_pool = valid_group.drop(index=tmax_idx)
                     
-                    # Prioritize samples strictly < 95% of ULOQ
                     limit_95_uloq = 0.95 * uloq if pd.notna(uloq) else float('inf')
                     cmax_cands = cmax_pool[cmax_pool['Final Conc'] < limit_95_uloq].sort_values(by='Final Conc', ascending=False)
                     
-                    # Fallback if no samples < 95% exist
                     if len(cmax_cands) < isr_cmax_count:
                         cmax_cands = cmax_pool.sort_values(by='Final Conc', ascending=False)
                         
                     selected_cmax = cmax_cands.head(isr_cmax_count)
                     selected_indices = list(selected_cmax.index)
-                    # Add true Cmax index to selected indices so it isn't grabbed in elimination
                     selected_indices.append(tmax_idx) 
                     
-                    # 2. Elimination Selection Phase
                     elim_pool = valid_group[(valid_group['Timepoint_Float'] > tmax_time) & (~valid_group.index.isin(selected_indices))]
-                    # Prioritize samples > LQC
                     elim_pref = elim_pool[elim_pool['Final Conc'] > lqc_val].sort_values(by='Timepoint_Float', ascending=False)
                     
                     if len(elim_pref) >= isr_elim_count:
@@ -445,7 +468,6 @@ if st.button("Generate Final Concentration Tracker"):
                             'Selection Phase': 'Elimination Phase'
                         })
 
-            # Write ISR Selection Sheet
             ws_sel = workbook.add_worksheet("ISR Selection")
             ws_sel.set_column('A:A', 10, general_fmt)
             ws_sel.set_column('B:D', 15, general_fmt)
@@ -458,7 +480,6 @@ if st.button("Generate Final Concentration Tracker"):
                 
             if isr_selection_rows:
                 df_isr = pd.DataFrame(isr_selection_rows)
-                # Sort alphanumerically by Sample Name
                 df_isr = df_isr.sort_values(by='Sample Name', key=lambda col: col.map(natural_sort_key)).reset_index(drop=True)
                 
                 s_no = 1
@@ -479,6 +500,30 @@ if st.button("Generate Final Concentration Tracker"):
                 ws_sel.write(1, 4, "No eligible samples found.", data_white)
                 ws_sel.write(1, 5, "", data_white)
                 ws_sel.write(1, 6, "-", data_white)
+                
+            # -----------------------------------------------------------------
+            # 3. TIMEPOINT MISMATCHES SHEET
+            # -----------------------------------------------------------------
+            ws_mis = workbook.add_worksheet("Timepoint Mismatches")
+            ws_mis.set_column('A:A', 35, general_fmt)
+            ws_mis.set_column('B:B', 30, general_fmt)
+            ws_mis.set_column('C:C', 25, general_fmt)
+            
+            mis_headers = ["File Name", "Sample Name", "Extracted Timepoint"]
+            for col_num, header in enumerate(mis_headers):
+                ws_mis.write(0, col_num, header, table_header_green)
+                
+            if mismatches_list:
+                df_mis = pd.DataFrame(mismatches_list)
+                df_mis = df_mis.sort_values(by=["File Name", "Sample Name"]).reset_index(drop=True)
+                for r_idx, row in df_mis.iterrows():
+                    ws_mis.write(r_idx + 1, 0, row["File Name"], data_white)
+                    ws_mis.write(r_idx + 1, 1, row["Sample Name"], data_white)
+                    ws_mis.write(r_idx + 1, 2, row["Extracted Timepoint"], data_white)
+            else:
+                ws_mis.write(1, 0, "-", data_white)
+                ws_mis.write(1, 1, "-", data_white)
+                ws_mis.write(1, 2, "No Mismatches Found", data_white)
 
         st.download_button(
             label="Download Final Concentration Tracker",
@@ -486,5 +531,9 @@ if st.button("Generate Final Concentration Tracker"):
             file_name="Final_Concentration_Tracker.xlsx",
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
         )
+        
+        if mismatches_list:
+            st.warning("⚠️ Warning: Timepoint mismatches were found between your Uploaded Files and your Setup File. Please check the 'Timepoint Mismatches' tab in the generated Excel file to see which samples were skipped.")
+
     else:
         st.error("Please upload BOTH the Setup file and the Main TSQ Export file(s).")
