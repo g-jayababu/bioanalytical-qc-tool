@@ -374,10 +374,8 @@ if st.button("Generate Dashboard"):
                 'slope': slope, 'intercept': intercept, 'r_val': r_val,
                 'avg_is_area': avg_is_area,
                 'cc_total': cc_total, 'cc_pass': cc_pass, 'failed_cc_ids': failed_cc_ids,
-                'lqc_total': lqc_total, 'lqc_pass': lqc_pass, 
-                'mmqc_total': mmqc_total, 'mmqc_pass': mmqc_pass, 
-                'mqc_total': mqc_total, 'mqc_pass': mqc_pass, 
-                'hqc_total': hqc_total, 'hqc_pass': hqc_pass,
+                'lqc_objs': lqc_list_objs, 'mmqc_objs': mmqc_list_objs, 
+                'mqc_objs': mqc_list_objs, 'hqc_objs': hqc_list_objs,
                 'std_a_area': std_a_area, 'std_zero_is_area': std_zero_is_area,
                 'blk_a_area': blk_a_area, 'blk_is_area': blk_is_area,
                 'zero_a_area': zero_a_area, 'zero_is_area': zero_is_area,
@@ -515,6 +513,7 @@ if st.button("Generate Dashboard"):
             data_white = workbook.add_format({**tnr, 'bg_color': '#FFFFFF', 'border': 1, 'align': 'center', 'valign': 'vcenter'})
             data_white_left = workbook.add_format({**tnr, 'bg_color': '#FFFFFF', 'border': 1, 'align': 'left', 'valign': 'vcenter'})
             data_white_float = workbook.add_format({**tnr, 'bg_color': '#FFFFFF', 'border': 1, 'align': 'center', 'valign': 'vcenter', 'num_format': '0.000'})
+            data_white_int = workbook.add_format({**tnr, 'bg_color': '#FFFFFF', 'border': 1, 'align': 'center', 'valign': 'vcenter', 'num_format': '0'})
             data_white_pct = workbook.add_format({**tnr, 'bg_color': '#FFFFFF', 'border': 1, 'align': 'center', 'valign': 'vcenter', 'num_format': '0.00'})
             data_white_r = workbook.add_format({**tnr, 'bg_color': '#FFFFFF', 'border': 1, 'align': 'center', 'valign': 'vcenter', 'num_format': '0.0000'})
             data_yellow_float = workbook.add_format({**tnr, 'bg_color': '#FFFF00', 'border': 1, 'align': 'center', 'valign': 'vcenter', 'num_format': '0.000'})
@@ -530,16 +529,19 @@ if st.button("Generate Dashboard"):
             qa_row = 0
             
             for safe_sheet_name, meta in batch_meta_data.items():
-                qa_ws.merge_range(qa_row, 0, qa_row, 3, f"QA Summary - Batch: {safe_sheet_name}", table_header_green)
+                qa_ws.merge_range(qa_row, 0, qa_row, 6, f"QA Summary - Batch: {safe_sheet_name}", table_header_green)
                 qa_row += 1
                 
                 qa_ws.write(qa_row, 0, "LLOQ area", data_white_left)
-                qa_ws.write(qa_row, 1, meta.get('std_a_area', 'N/A'), data_white)
-                qa_ws.write(qa_row, 2, "Average IS area of accepted CC, QC samples", data_white_left)
-                qa_ws.write(qa_row, 3, meta.get('avg_is_area', 'N/A'), data_white_float)
+                std_a = meta.get('std_a_area')
+                avg_is = meta.get('avg_is_area')
+
+                qa_ws.write(qa_row, 1, std_a if pd.notna(std_a) else "N/A", data_white_int if pd.notna(std_a) else data_white)
+                qa_ws.merge_range(qa_row, 2, qa_row, 4, "Average IS area of accepted CC, QC samples", data_white_left)
+                qa_ws.merge_range(qa_row, 5, qa_row, 6, avg_is if pd.notna(avg_is) else "N/A", data_white_int if pd.notna(avg_is) else data_white)
                 qa_row += 1
                 
-                qa_ws.merge_range(qa_row, 0, qa_row, 3, "Acceptability of interference in Standard Blank, Standard Blank + IS and MPH/ESO/RCS", table_header_green)
+                qa_ws.merge_range(qa_row, 0, qa_row, 6, "Acceptability of interference in Standard Blank, Standard Blank + IS and MPH/ESO/RCS", table_header_green)
                 qa_row += 1
                 
                 def calc_interf(area, ref_area):
@@ -547,121 +549,124 @@ if st.button("Generate Dashboard"):
                         return (area / ref_area) * 100
                     return "N/A"
 
-                std_a = meta.get('std_a_area')
-                avg_is = meta.get('avg_is_area')
+                blk_a = meta.get('blk_a_area'); blk_a_pct = calc_interf(blk_a, std_a)
+                blk_is = meta.get('blk_is_area'); blk_is_pct = calc_interf(blk_is, avg_is)
+                zero_a = meta.get('zero_a_area'); zero_a_pct = calc_interf(zero_a, std_a)
+                mph_a = meta.get('mph_a_area'); mph_a_pct = calc_interf(mph_a, std_a)
+                mph_is = meta.get('mph_is_area'); mph_is_pct = calc_interf(mph_is, avg_is)
+                
+                interf_accepted = "Accepted"
+                for pct in [blk_a_pct, zero_a_pct, mph_a_pct]:
+                    if isinstance(pct, (int, float)) and pct > 20.0: interf_accepted = "Not Accepted"
+                for pct in [blk_is_pct, mph_is_pct]:
+                    if isinstance(pct, (int, float)) and pct > 5.0: interf_accepted = "Not Accepted"
 
-                blk_a = meta.get('blk_a_area')
-                blk_a_pct = calc_interf(blk_a, std_a)
-                
-                blk_is = meta.get('blk_is_area')
-                blk_is_pct = calc_interf(blk_is, avg_is)
-                
-                zero_a = meta.get('zero_a_area')
-                zero_a_pct = calc_interf(zero_a, std_a)
-                
-                mph_a = meta.get('mph_a_area')
-                mph_a_pct = calc_interf(mph_a, std_a)
-                
-                mph_is = meta.get('mph_is_area')
-                mph_is_pct = calc_interf(mph_is, avg_is)
+                def write_interf_row(label, area, pct):
+                    qa_ws.merge_range(qa_row, 0, qa_row, 1, label, data_white_left)
+                    qa_ws.merge_range(qa_row, 2, qa_row, 3, area if pd.notna(area) else "N/A", data_white_int if pd.notna(area) else data_white)
+                    qa_ws.merge_range(qa_row, 4, qa_row, 5, "% Interference", data_white)
+                    qa_ws.write(qa_row, 6, pct, data_white_pct if isinstance(pct, (int, float)) else data_white)
 
-                qa_ws.write(qa_row, 0, "Area Observed for Standard Blank at Analyte RT:", data_white_left)
-                qa_ws.write(qa_row, 1, blk_a if pd.notna(blk_a) else "N/A", data_white_float if pd.notna(blk_a) else data_white)
-                qa_ws.write(qa_row, 2, "% Interference", data_white)
-                qa_ws.write(qa_row, 3, blk_a_pct, data_white_pct if isinstance(blk_a_pct, (int, float)) else data_white)
-                qa_row += 1
-                
-                qa_ws.write(qa_row, 0, "Area Observed for Standard Blank at IS RT:", data_white_left)
-                qa_ws.write(qa_row, 1, blk_is if pd.notna(blk_is) else "N/A", data_white_float if pd.notna(blk_is) else data_white)
-                qa_ws.write(qa_row, 2, "% Interference", data_white)
-                qa_ws.write(qa_row, 3, blk_is_pct, data_white_pct if isinstance(blk_is_pct, (int, float)) else data_white)
-                qa_row += 1
-                
-                qa_ws.write(qa_row, 0, "Area Observed for Standard Blank+IS at Analyte RT:", data_white_left)
-                qa_ws.write(qa_row, 1, zero_a if pd.notna(zero_a) else "N/A", data_white_float if pd.notna(zero_a) else data_white)
-                qa_ws.write(qa_row, 2, "% Interference", data_white)
-                qa_ws.write(qa_row, 3, zero_a_pct, data_white_pct if isinstance(zero_a_pct, (int, float)) else data_white)
-                qa_row += 1
-                
-                qa_ws.write(qa_row, 0, "Area Observed for MPH/ESO/RCS at Analyte RT:", data_white_left)
-                qa_ws.write(qa_row, 1, mph_a if pd.notna(mph_a) else "N/A", data_white_float if pd.notna(mph_a) else data_white)
-                qa_ws.write(qa_row, 2, "% Interference", data_white)
-                qa_ws.write(qa_row, 3, mph_a_pct, data_white_pct if isinstance(mph_a_pct, (int, float)) else data_white)
-                qa_row += 1
-                
-                qa_ws.write(qa_row, 0, "Area Observed for MPH/ESO/RCS at IS RT:", data_white_left)
-                qa_ws.write(qa_row, 1, mph_is if pd.notna(mph_is) else "N/A", data_white_float if pd.notna(mph_is) else data_white)
-                qa_ws.write(qa_row, 2, "% Interference", data_white)
-                qa_ws.write(qa_row, 3, mph_is_pct, data_white_pct if isinstance(mph_is_pct, (int, float)) else data_white)
-                qa_row += 1
+                write_interf_row("Area Observed for Standard Blank at Analyte RT:", blk_a, blk_a_pct); qa_row += 1
+                write_interf_row("Area Observed for Standard Blank at IS RT:", blk_is, blk_is_pct); qa_row += 1
+                write_interf_row("Area Observed for Standard Blank+IS at Analyte RT:", zero_a, zero_a_pct); qa_row += 1
+                write_interf_row("Area Observed for MPH/ESO/RCS at Analyte RT:", mph_a, mph_a_pct); qa_row += 1
+                write_interf_row("Area Observed for MPH/ESO/RCS at IS RT:", mph_is, mph_is_pct); qa_row += 1
 
-                qa_ws.merge_range(qa_row, 0, qa_row, 1, "% Interference for Standard Blank, Standard Blank+IS, MPH/ESO/RCS:", data_white_left)
-                qa_ws.merge_range(qa_row, 2, qa_row, 3, "Accepted/Not Accepted", data_white)
+                qa_ws.merge_range(qa_row, 0, qa_row, 3, "% Interference for Standard Blank, Standard Blank+IS, MPH/ESO/RCS:", data_white_left)
+                qa_ws.merge_range(qa_row, 4, qa_row, 6, interf_accepted, data_white)
                 qa_row += 1
                 
-                qa_ws.merge_range(qa_row, 0, qa_row, 3, "Acceptability of Non-Zero calibration curve standards", table_header_green)
+                qa_ws.merge_range(qa_row, 0, qa_row, 6, "Acceptability of Non-Zero calibration curve standards", table_header_green)
                 qa_row += 1
                 qa_ws.write(qa_row, 0, "CC ID:", data_white_left)
-                qa_ws.write(qa_row, 1, meta.get('ccid_str', ''), data_white)
-                qa_ws.write(qa_row, 2, "'r' value", data_white_left)
-                qa_ws.write(qa_row, 3, meta.get('r_val', ''), data_white_r)
+                qa_ws.merge_range(qa_row, 1, qa_row, 3, meta.get('ccid_str', ''), data_white)
+                qa_ws.merge_range(qa_row, 4, qa_row, 5, "'r' value", data_white_left)
+                qa_ws.write(qa_row, 6, meta.get('r_val', ''), data_white_r)
                 qa_row += 1
+                
+                cc_total = meta.get('cc_total', 0); cc_pass = meta.get('cc_pass', 0)
+                cc_status = "Accepted" if cc_total >= 6 and (cc_pass / cc_total) >= 0.75 else "Not Accepted"
+                
                 qa_ws.write(qa_row, 0, "No. of CC standards injected", data_white_left)
-                qa_ws.write(qa_row, 1, meta.get('cc_total', ''), data_white)
-                qa_ws.write(qa_row, 2, "No. of CC standard accepted", data_white_left)
-                qa_ws.write(qa_row, 3, meta.get('cc_pass', ''), data_white)
+                qa_ws.merge_range(qa_row, 1, qa_row, 3, cc_total, data_white)
+                qa_ws.merge_range(qa_row, 4, qa_row, 5, "No. of CC standard accepted", data_white_left)
+                qa_ws.write(qa_row, 6, cc_pass, data_white)
                 qa_row += 1
+                
                 qa_ws.write(qa_row, 0, "Details of Failed CC standard(s), if any", data_white_left)
-                qa_ws.merge_range(qa_row, 1, qa_row, 3, ", ".join(meta.get('failed_cc_ids', [])), data_white)
+                qa_ws.merge_range(qa_row, 1, qa_row, 6, ", ".join(meta.get('failed_cc_ids', [])), data_white)
                 qa_row += 1
                 qa_ws.write(qa_row, 0, "Calibration curve status:", data_white_left)
-                qa_ws.merge_range(qa_row, 1, qa_row, 3, "Accepted/Not Accepted", data_white)
+                qa_ws.merge_range(qa_row, 1, qa_row, 6, cc_status, data_white)
                 qa_row += 1
                 
-                qa_ws.merge_range(qa_row, 0, qa_row, 3, "Acceptability of QC Samples", table_header_green)
+                qa_ws.merge_range(qa_row, 0, qa_row, 6, "Acceptability of QC Samples", table_header_green)
                 qa_row += 1
-                qa_ws.write(qa_row, 0, "QC ID", table_header_green)
-                qa_ws.write(qa_row, 1, "Total No. of QC Injected", table_header_green)
-                qa_ws.write(qa_row, 2, "Total No. of QC Passed", table_header_green)
-                qa_ws.write(qa_row, 3, "Acceptance status Yes/ No", table_header_green)
+                qa_ws.merge_range(qa_row, 0, qa_row + 1, 0, "QC ID", table_header_green)
+                qa_ws.merge_range(qa_row, 1, qa_row, 2, "Total No. of QC Injected", table_header_green)
+                qa_ws.merge_range(qa_row, 3, qa_row, 4, "Total No. of QC Passed", table_header_green)
+                qa_ws.merge_range(qa_row, 5, qa_row, 6, "Acceptance status Yes/ No", table_header_green)
                 qa_row += 1
                 
-                for qc_level, t_key, p_key in [("LQC", 'lqc_total', 'lqc_pass'), ("MMQC", 'mmqc_total', 'mmqc_pass'), ("MQC", 'mqc_total', 'mqc_pass'), ("HQC", 'hqc_total', 'hqc_pass')]:
-                    qa_ws.write(qa_row, 0, qc_level, data_white_left)
-                    qa_ws.write(qa_row, 1, meta.get(t_key, ''), data_white)
-                    qa_ws.write(qa_row, 2, meta.get(p_key, ''), data_white)
-                    qa_ws.write(qa_row, 3, "", data_white)
+                qa_ws.write(qa_row, 1, "Set-1", table_header_green); qa_ws.write(qa_row, 2, "Set-2", table_header_green)
+                qa_ws.write(qa_row, 3, "Set-1", table_header_green); qa_ws.write(qa_row, 4, "Set-2", table_header_green)
+                qa_ws.write(qa_row, 5, "Set-1", table_header_green); qa_ws.write(qa_row, 6, "Set-2", table_header_green)
+                qa_row += 1
+                
+                def process_qc_sets(objs):
+                    mid = len(objs) // 2
+                    set1 = objs[:mid] if mid > 0 else objs
+                    set2 = objs[mid:] if mid > 0 else []
+                    s1_t, s1_p = len(set1), sum(1 for o in set1 if o['pass'])
+                    s2_t, s2_p = len(set2), sum(1 for o in set2 if o['pass'])
+                    
+                    s1_ok = "Yes" if s1_t > 0 and (s1_p / s1_t) >= 0.5 else ("-" if s1_t == 0 else "No")
+                    s2_ok = "Yes" if s2_t > 0 and (s2_p / s2_t) >= 0.5 else ("-" if s2_t == 0 else "No")
+                    
+                    f_id = objs[0]['name'].split('-')[-1] if objs else ""
+                    l_id = objs[-1]['name'].split('-')[-1] if objs else ""
+                    return f"({f_id}-{l_id})" if f_id and l_id else "", s1_t, s2_t, s1_p, s2_p, s1_ok, s2_ok
+                
+                tot_s1_inj = tot_s2_inj = tot_s1_pass = tot_s2_pass = 0
+                
+                for qc_lvl, objs in [("LQC", meta.get('lqc_objs',[])), ("MMQC", meta.get('mmqc_objs',[])), ("MQC", meta.get('mqc_objs',[])), ("HQC", meta.get('hqc_objs',[]))]:
+                    id_str, s1_t, s2_t, s1_p, s2_p, s1_ok, s2_ok = process_qc_sets(objs)
+                    tot_s1_inj += s1_t; tot_s2_inj += s2_t; tot_s1_pass += s1_p; tot_s2_pass += s2_p
+                    
+                    qa_ws.write(qa_row, 0, f"{qc_lvl} {id_str}", data_white_left)
+                    qa_ws.write(qa_row, 1, s1_t, data_white); qa_ws.write(qa_row, 2, s2_t, data_white)
+                    qa_ws.write(qa_row, 3, s1_p, data_white); qa_ws.write(qa_row, 4, s2_p, data_white)
+                    qa_ws.write(qa_row, 5, s1_ok, data_white); qa_ws.write(qa_row, 6, s2_ok, data_white)
                     qa_row += 1
                     
                 qa_ws.write(qa_row, 0, "Total no. of QCs", data_white_left)
-                total_injected = meta.get('lqc_total',0) + meta.get('mmqc_total',0) + meta.get('mqc_total',0) + meta.get('hqc_total',0)
-                qa_ws.write(qa_row, 1, total_injected, data_white)
-                qa_ws.merge_range(qa_row, 2, qa_row, 3, "", data_white)
+                qa_ws.write(qa_row, 1, tot_s1_inj, data_white); qa_ws.write(qa_row, 2, tot_s2_inj, data_white)
+                qa_ws.write(qa_row, 3, tot_s1_pass, data_white); qa_ws.write(qa_row, 4, tot_s2_pass, data_white)
+                
+                g_s1_ok = "Yes" if tot_s1_inj > 0 and (tot_s1_pass / tot_s1_inj) >= 0.67 else ("-" if tot_s1_inj==0 else "No")
+                g_s2_ok = "Yes" if tot_s2_inj > 0 and (tot_s2_pass / tot_s2_inj) >= 0.67 else ("-" if tot_s2_inj==0 else "No")
+                qa_ws.write(qa_row, 5, g_s1_ok, data_white); qa_ws.write(qa_row, 6, g_s2_ok, data_white)
                 qa_row += 1
                 
-                qa_ws.merge_range(qa_row, 0, qa_row, 3, "Repeat Sample Identification", table_header_green)
+                qa_ws.merge_range(qa_row, 0, qa_row, 6, "Repeat Sample Identification", table_header_green)
                 qa_row += 1
-                qa_ws.write(qa_row, 0, "S.No", table_header_green)
-                qa_ws.write(qa_row, 1, "Sample Name", table_header_green)
-                qa_ws.write(qa_row, 2, "Repeat code", table_header_green)
-                qa_ws.write(qa_row, 3, "", table_header_green)
+                qa_ws.merge_range(qa_row, 0, qa_row, 1, "S.No", table_header_green)
+                qa_ws.merge_range(qa_row, 2, qa_row, 4, "Sample Name", table_header_green)
+                qa_ws.merge_range(qa_row, 5, qa_row, 6, "Repeat code", table_header_green)
                 qa_row += 1
                 
                 rep_count = 1
                 for smp in meta.get('out_of_range', []):
-                    qa_ws.write(qa_row, 0, rep_count, data_white)
-                    qa_ws.write(qa_row, 1, smp['name'], data_white)
-                    qa_ws.write(qa_row, 2, "Out of Range %IS", data_white)
-                    qa_ws.write(qa_row, 3, "", data_white)
-                    rep_count += 1
-                    qa_row += 1
+                    qa_ws.merge_range(qa_row, 0, qa_row, 1, rep_count, data_white)
+                    qa_ws.merge_range(qa_row, 2, qa_row, 4, smp['name'], data_white)
+                    qa_ws.merge_range(qa_row, 5, qa_row, 6, "Out of Range %IS", data_white)
+                    rep_count += 1; qa_row += 1
                 for smp in meta.get('above_uloq', []):
-                    qa_ws.write(qa_row, 0, rep_count, data_white)
-                    qa_ws.write(qa_row, 1, smp['name'], data_white)
-                    qa_ws.write(qa_row, 2, "Above ULOQ", data_white)
-                    qa_ws.write(qa_row, 3, "", data_white)
-                    rep_count += 1
-                    qa_row += 1
+                    qa_ws.merge_range(qa_row, 0, qa_row, 1, rep_count, data_white)
+                    qa_ws.merge_range(qa_row, 2, qa_row, 4, smp['name'], data_white)
+                    qa_ws.merge_range(qa_row, 5, qa_row, 6, "Above ULOQ", data_white)
+                    rep_count += 1; qa_row += 1
                     
                 qa_row += 3 
 
