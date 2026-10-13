@@ -90,7 +90,6 @@ if st.button("Generate Final Concentration Tracker"):
             periods_list = [p.strip() for p in periods_str.split(',')] if periods_str else []
             timepoints_list = [tp.strip() for tp in timepoints_str.split(',')] if timepoints_str else []
             
-            # Map expected timepoints to float values for strict validation
             for tp_val in timepoints_list:
                 t_nums = re.findall(r'\d+\.\d+|\d+', str(tp_val))
                 tp_flt = float(t_nums[0]) if t_nums else -1.0
@@ -109,7 +108,6 @@ if st.button("Generate Final Concentration Tracker"):
                     nominals[cc_id] = nom_val
                     if 'LQC' in cc_id: lqc_val = nom_val
             
-            # Fallback LQC to 3x LLOQ if standard LQC naming wasn't found
             if lqc_val == 0.0 and pd.notna(lloq):
                 lqc_val = lloq * 3
                 
@@ -169,14 +167,12 @@ if st.button("Generate Final Concentration Tracker"):
                 if 'UNKNOWN' in s_type_up and 'AQSTD' not in s_name_up and 'BLK' not in s_name_up and '+IS' not in s_name_up and 'BLANK' not in s_name_up:
                     base_up = get_base_name(s_name_raw).upper()
                     
-                    # --- TIMEPOINT MISMATCH VALIDATION ---
                     parts = re.split(r'[-_]', s_name_raw)
                     tp_str = parts[2] if len(parts) > 2 else ""
                     t_nums = re.findall(r'\d+\.\d+|\d+', tp_str)
                     tp_float = float(t_nums[0]) if t_nums else -1.0
                     if "PRE" in tp_str.upper(): tp_float = -1.0
                     
-                    # Compare extracted timepoint against setup expected timepoints
                     if expected_tps and (tp_float not in expected_tps):
                         mismatch_entry = {
                             "File Name": file.name,
@@ -194,6 +190,7 @@ if st.button("Generate Final Concentration Tracker"):
 
         # --- PREPARE MAPPED SAMPLES FOR MATRIX ---
         mapped_initial = {}
+        unmatched_initial = {}
         for base_up, (conc, raw_conc_val, s_name_raw) in initial_samples.items():
             parts = re.split(r'[-_]', s_name_raw)
             subj_str = parts[0] if len(parts) > 0 else s_name_raw
@@ -208,7 +205,16 @@ if st.button("Generate Final Concentration Tracker"):
             tp_float = float(tp_nums[0]) if tp_nums else -1.0
             if "PRE" in tp_str.upper(): tp_float = -1.0
 
-            mapped_initial[(subj_int, period_clean, tp_float)] = (conc, raw_conc_val, s_name_raw)
+            # Route samples into exact matches or the typological recovery pool
+            if expected_tps and tp_float not in expected_tps:
+                if (subj_int, period_clean) not in unmatched_initial:
+                    unmatched_initial[(subj_int, period_clean)] = []
+                unmatched_initial[(subj_int, period_clean)].append((tp_float, conc, raw_conc_val, s_name_raw, base_up))
+            else:
+                mapped_initial[(subj_int, period_clean, tp_float)] = (conc, raw_conc_val, s_name_raw)
+                
+        for k in unmatched_initial:
+            unmatched_initial[k].sort(key=lambda x: x[0])
             
         mapped_repeat = {}
         for base_up, (conc, raw_conc_val, s_name_raw) in repeat_samples.items():
@@ -244,8 +250,18 @@ if st.button("Generate Final Concentration Tracker"):
             conc_fmt = workbook.add_format({**tnr, 'num_format': '0.000', 'align': 'center', 'valign': 'vcenter'})
             pct_fmt = workbook.add_format({**tnr, 'num_format': '0.00', 'align': 'center', 'valign': 'vcenter'})
 
+            def get_display_val(conc_val, raw_str, current_lloq):
+                raw_clean = str(raw_str).strip()
+                if raw_clean.upper() == "M": return "M", True
+                if raw_clean in ["< 0", "<0"]: return 0.0, False
+                if pd.notna(conc_val) and isinstance(conc_val, (int, float)):
+                    if pd.notna(current_lloq) and conc_val < current_lloq: return 0.0, False
+                    return conc_val, False
+                if raw_clean.upper() in ["NAN", "NONE", ""]: return "", True
+                return raw_clean, True
+
             # -----------------------------------------------------------------
-            # 1. FINAL CONC AFTER REPEAT SHEET
+            # 1. STRICT: FINAL CONC AFTER REPEAT SHEET (No recovery)
             # -----------------------------------------------------------------
             ws_rep = workbook.add_worksheet("Final Conc After Repeat")
             ws_rep.set_column('A:B', 15, general_fmt)
@@ -264,21 +280,9 @@ if st.button("Generate Final Concentration Tracker"):
             ws_rep.merge_range(2, 1, 2, 2, cc_range_str, data_white)
             
             rep_headers = ["Subject No.", "Period No.", "Timepoints", f"Final Conc.({unit})", "Sample Name", f"Initial Conc.({unit})", "% Difference"]
-            for col_num, header in enumerate(rep_headers): 
-                ws_rep.write(4, col_num, header, table_header_green)
-            
-            def get_display_val(conc_val, raw_str, current_lloq):
-                raw_clean = str(raw_str).strip()
-                if raw_clean.upper() == "M": return "M", True
-                if raw_clean in ["< 0", "<0"]: return 0.0, False
-                if pd.notna(conc_val) and isinstance(conc_val, (int, float)):
-                    if pd.notna(current_lloq) and conc_val < current_lloq: return 0.0, False
-                    return conc_val, False
-                if raw_clean.upper() in ["NAN", "NONE", ""]: return "", True
-                return raw_clean, True
+            for col_num, header in enumerate(rep_headers): ws_rep.write(4, col_num, header, table_header_green)
             
             row_idx = 5
-            
             if num_subj > 0 and periods_list and timepoints_list:
                 for subj_idx in range(1, num_subj + 1):
                     subj_formatted = f"S{subj_idx:03d}"
@@ -298,25 +302,26 @@ if st.button("Generate Final Concentration Tracker"):
                             
                             if lookup_key in mapped_initial:
                                 initial_conc, init_raw_str, init_s_name = mapped_initial[lookup_key]
+                                base_up = get_base_name(init_s_name).upper()
                             else:
                                 initial_conc, init_raw_str, init_s_name = np.nan, "M", "Missing"
+                                base_up = None
                                 
-                            if lookup_key in mapped_repeat:
+                            if base_up and base_up in repeat_samples:
+                                repeat_conc, rep_raw_str, rep_s_name = repeat_samples[base_up]
+                                has_repeat = True
+                            elif lookup_key in mapped_repeat:
                                 repeat_conc, rep_raw_str, rep_s_name = mapped_repeat[lookup_key]
                                 has_repeat = True
                             else:
                                 repeat_conc, rep_raw_str, rep_s_name = np.nan, "", ""
                                 has_repeat = False
 
-                            if has_repeat:
-                                final_conc, final_raw_str, final_s_name = repeat_conc, rep_raw_str, rep_s_name
-                            else:
-                                final_conc, final_raw_str, final_s_name = initial_conc, init_raw_str, init_s_name
+                            if has_repeat: final_conc, final_raw_str, final_s_name = repeat_conc, rep_raw_str, rep_s_name
+                            else: final_conc, final_raw_str, final_s_name = initial_conc, init_raw_str, init_s_name
 
                             c_final_out, is_final_str = get_display_val(final_conc, final_raw_str, lloq)
-                            c_final_fmt = data_white if is_final_str else data_white_float
                             c_init_out, is_init_str = get_display_val(initial_conc, init_raw_str, lloq)
-                            c_init_fmt = data_white if is_init_str else data_white_float
 
                             pct_diff = ""
                             if has_repeat and not is_init_str and not is_final_str and isinstance(c_init_out, (int, float)) and c_init_out > 0:
@@ -325,15 +330,116 @@ if st.button("Generate Final Concentration Tracker"):
                             ws_rep.write(row_idx, 0, subj_formatted, data_white)
                             ws_rep.write(row_idx, 1, period_val, data_white)
                             ws_rep.write_string(row_idx, 2, timep_display, data_white) 
-                            ws_rep.write(row_idx, 3, c_final_out, c_final_fmt)
+                            ws_rep.write(row_idx, 3, c_final_out, data_white if is_final_str else data_white_float)
                             ws_rep.write(row_idx, 4, final_s_name, data_white)
                             
                             if has_repeat:
-                                ws_rep.write(row_idx, 5, c_init_out, c_init_fmt)
+                                ws_rep.write(row_idx, 5, c_init_out, data_white if is_init_str else data_white_float)
                                 ws_rep.write(row_idx, 6, pct_diff, data_white_pct if pct_diff != "" else data_white)
                             else:
                                 ws_rep.write(row_idx, 5, "", data_white)
                                 ws_rep.write(row_idx, 6, "", data_white)
+                            row_idx += 1
+
+            # -----------------------------------------------------------------
+            # 2. RECOVERED: FINAL CONC + MISMATCHES SHEET
+            # -----------------------------------------------------------------
+            ws_mis_conc = workbook.add_worksheet("Final Conc + Mismatches")
+            ws_mis_conc.set_column('A:B', 15, general_fmt)
+            ws_mis_conc.set_column('C:C', 15, general_fmt)
+            ws_mis_conc.set_column('D:D', 20, conc_fmt)
+            ws_mis_conc.set_column('E:E', 25, general_fmt)
+            ws_mis_conc.set_column('F:F', 20, conc_fmt)
+            ws_mis_conc.set_column('G:G', 20, pct_fmt)
+            ws_mis_conc.set_column('H:H', 40, general_fmt)
+            
+            ws_mis_conc.write(0, 0, "Molecule Name", data_white)
+            ws_mis_conc.merge_range(0, 1, 0, 2, mol_name.upper(), data_white)
+            ws_mis_conc.write(1, 0, "Study Number", data_white)
+            ws_mis_conc.merge_range(1, 1, 1, 2, study_num.upper(), data_white)
+            ws_mis_conc.write(2, 0, "CC range", data_white)
+            ws_mis_conc.merge_range(2, 1, 2, 2, cc_range_str, data_white)
+            
+            mis_conc_headers = ["Subject No.", "Period No.", "Timepoints", f"Final Conc.({unit})", "Sample Name", f"Initial Conc.({unit})", "% Difference", "Remarks"]
+            for col_num, header in enumerate(mis_conc_headers): ws_mis_conc.write(4, col_num, header, table_header_green)
+            
+            row_idx = 5
+            if num_subj > 0 and periods_list and timepoints_list:
+                for subj_idx in range(1, num_subj + 1):
+                    subj_formatted = f"S{subj_idx:03d}"
+                    for period_val in periods_list:
+                        period_clean = period_val.strip().upper()
+                        
+                        # Match unresolved blanks with isolated typological errors for this subj/period
+                        missing_tps_for_sp = []
+                        for tp_val in timepoints_list:
+                            tp_nums = re.findall(r'\d+\.\d+|\d+', str(tp_val))
+                            tp_float = float(tp_nums[0]) if tp_nums else -1.0
+                            if "PRE" in str(tp_val).upper(): tp_float = -1.0
+                            if (subj_idx, period_clean, tp_float) not in mapped_initial:
+                                missing_tps_for_sp.append(tp_float)
+                        missing_tps_for_sp.sort()
+                        
+                        pool = unmatched_initial.get((subj_idx, period_clean), [])
+                        mismatch_mapping = dict(zip(missing_tps_for_sp, pool))
+                        
+                        for tp_val in timepoints_list:
+                            tp_nums = re.findall(r'\d+\.\d+|\d+', str(tp_val))
+                            tp_float = float(tp_nums[0]) if tp_nums else -1.0
+                            if "PRE" in str(tp_val).upper(): tp_float = -1.0
+                            
+                            timep_display = ""
+                            if "PRE" in str(tp_val).upper(): timep_display = "PRE"
+                            elif tp_nums: timep_display = f"{float(tp_nums[0]):05.2f}"
+                            else: timep_display = str(tp_val)
+                                
+                            lookup_key = (subj_idx, period_clean, tp_float)
+                            remark = ""
+                            
+                            if lookup_key in mapped_initial:
+                                initial_conc, init_raw_str, init_s_name = mapped_initial[lookup_key]
+                                base_up = get_base_name(init_s_name).upper()
+                            elif tp_float in mismatch_mapping:
+                                unm_tp, initial_conc, init_raw_str, init_s_name, base_up = mismatch_mapping[tp_float]
+                                remark = f"Mismatch in export: Actual name '{init_s_name}'"
+                            else:
+                                initial_conc, init_raw_str, init_s_name = np.nan, "M", "Missing"
+                                base_up = None
+
+                            if base_up and base_up in repeat_samples:
+                                repeat_conc, rep_raw_str, rep_s_name = repeat_samples[base_up]
+                                has_repeat = True
+                            elif lookup_key in mapped_repeat:
+                                repeat_conc, rep_raw_str, rep_s_name = mapped_repeat[lookup_key]
+                                has_repeat = True
+                            else:
+                                repeat_conc, rep_raw_str, rep_s_name = np.nan, "", ""
+                                has_repeat = False
+
+                            if has_repeat: final_conc, final_raw_str, final_s_name = repeat_conc, rep_raw_str, rep_s_name
+                            else: final_conc, final_raw_str, final_s_name = initial_conc, init_raw_str, init_s_name
+
+                            c_final_out, is_final_str = get_display_val(final_conc, final_raw_str, lloq)
+                            c_init_out, is_init_str = get_display_val(initial_conc, init_raw_str, lloq)
+
+                            pct_diff = ""
+                            if has_repeat and not is_init_str and not is_final_str and isinstance(c_init_out, (int, float)) and c_init_out > 0:
+                                pct_diff = ((c_final_out - c_init_out) / ((c_init_out + c_final_out) / 2)) * 100
+
+                            ws_mis_conc.write(row_idx, 0, subj_formatted, data_white)
+                            ws_mis_conc.write(row_idx, 1, period_val, data_white)
+                            ws_mis_conc.write_string(row_idx, 2, timep_display, data_white) 
+                            ws_mis_conc.write(row_idx, 3, c_final_out, data_white if is_final_str else data_white_float)
+                            ws_mis_conc.write(row_idx, 4, final_s_name, data_white)
+                            
+                            if has_repeat:
+                                ws_mis_conc.write(row_idx, 5, c_init_out, data_white if is_init_str else data_white_float)
+                                ws_mis_conc.write(row_idx, 6, pct_diff, data_white_pct if pct_diff != "" else data_white)
+                            else:
+                                ws_mis_conc.write(row_idx, 5, "", data_white)
+                                ws_mis_conc.write(row_idx, 6, "", data_white)
+                                
+                            ws_mis_conc.write(row_idx, 7, remark, data_white)
                                 
                             master_data_list.append({
                                 'Subj': subj_formatted,
@@ -346,6 +452,7 @@ if st.button("Generate Final Concentration Tracker"):
                             })
                             row_idx += 1
             else:
+                # Fallback for unconfigured setup
                 sorted_samples = sorted(initial_samples.items(), key=lambda x: natural_sort_key(x[1][2]))
                 for base_up, (initial_conc, init_raw_str, init_s_name) in sorted_samples:
                     parts = re.split(r'[-_]', init_s_name)
@@ -365,33 +472,30 @@ if st.button("Generate Final Concentration Tracker"):
                     repeat_tuple = repeat_samples.get(base_up)
                     has_repeat = repeat_tuple is not None
                     
-                    if has_repeat:
-                        repeat_conc, rep_raw_str, rep_s_name = repeat_tuple
-                        final_conc, final_raw_str, final_s_name = repeat_conc, rep_raw_str, rep_s_name
-                    else:
-                        final_conc, final_raw_str, final_s_name = initial_conc, init_raw_str, init_s_name
+                    if has_repeat: final_conc, final_raw_str, final_s_name = repeat_tuple
+                    else: final_conc, final_raw_str, final_s_name = initial_conc, init_raw_str, init_s_name
 
                     c_final_out, is_final_str = get_display_val(final_conc, final_raw_str, lloq)
-                    c_final_fmt = data_white if is_final_str else data_white_float
                     c_init_out, is_init_str = get_display_val(initial_conc, init_raw_str, lloq)
-                    c_init_fmt = data_white if is_init_str else data_white_float
 
                     pct_diff = ""
                     if has_repeat and not is_init_str and not is_final_str and isinstance(c_init_out, (int, float)) and c_init_out > 0:
                         pct_diff = ((c_final_out - c_init_out) / ((c_init_out + c_final_out) / 2)) * 100
 
-                    ws_rep.write(row_idx, 0, subj, data_white)
-                    ws_rep.write(row_idx, 1, period, data_white)
-                    ws_rep.write_string(row_idx, 2, timep_display, data_white) 
-                    ws_rep.write(row_idx, 3, c_final_out, c_final_fmt)
-                    ws_rep.write(row_idx, 4, final_s_name, data_white)
+                    ws_mis_conc.write(row_idx, 0, subj, data_white)
+                    ws_mis_conc.write(row_idx, 1, period, data_white)
+                    ws_mis_conc.write_string(row_idx, 2, timep_display, data_white) 
+                    ws_mis_conc.write(row_idx, 3, c_final_out, data_white if is_final_str else data_white_float)
+                    ws_mis_conc.write(row_idx, 4, final_s_name, data_white)
                     
                     if has_repeat:
-                        ws_rep.write(row_idx, 5, c_init_out, c_init_fmt)
-                        ws_rep.write(row_idx, 6, pct_diff, data_white_pct if pct_diff != "" else data_white)
+                        ws_mis_conc.write(row_idx, 5, c_init_out, data_white if is_init_str else data_white_float)
+                        ws_mis_conc.write(row_idx, 6, pct_diff, data_white_pct if pct_diff != "" else data_white)
                     else:
-                        ws_rep.write(row_idx, 5, "", data_white)
-                        ws_rep.write(row_idx, 6, "", data_white)
+                        ws_mis_conc.write(row_idx, 5, "", data_white)
+                        ws_mis_conc.write(row_idx, 6, "", data_white)
+                        
+                    ws_mis_conc.write(row_idx, 7, "", data_white)
                         
                     t_nums = re.findall(r'\d+\.\d+|\d+', timep)
                     tp_float = float(t_nums[0]) if t_nums else -1.0
@@ -409,7 +513,7 @@ if st.button("Generate Final Concentration Tracker"):
                     row_idx += 1
 
             # -----------------------------------------------------------------
-            # 2. ISR SELECTION SHEET
+            # 3. ISR SELECTION SHEET
             # -----------------------------------------------------------------
             isr_selection_rows = []
             df_master = pd.DataFrame(master_data_list)
@@ -503,7 +607,7 @@ if st.button("Generate Final Concentration Tracker"):
                 ws_sel.write(1, 6, "-", data_white)
                 
             # -----------------------------------------------------------------
-            # 3. TIMEPOINT MISMATCHES SHEET
+            # 4. TIMEPOINT MISMATCHES SHEET
             # -----------------------------------------------------------------
             ws_mis = workbook.add_worksheet("Timepoint Mismatches")
             ws_mis.set_column('A:A', 35, general_fmt)
@@ -517,14 +621,12 @@ if st.button("Generate Final Concentration Tracker"):
                 
             if mismatches_list:
                 df_mis = pd.DataFrame(mismatches_list)
-                # Alphanumerical sorting by Sample Name
                 df_mis = df_mis.sort_values(by='Sample Name', key=lambda col: col.map(natural_sort_key)).reset_index(drop=True)
                 for r_idx, row in df_mis.iterrows():
                     ws_mis.write(r_idx + 1, 0, row["File Name"], data_white)
                     ws_mis.write(r_idx + 1, 1, row["Sample Name"], data_white)
                     ws_mis.write(r_idx + 1, 2, row["Extracted Timepoint"], data_white)
                     
-                    # Output concentration safely as float if possible
                     conc_val = row["Concentration"]
                     try:
                         num_val = float(conc_val)
@@ -545,7 +647,7 @@ if st.button("Generate Final Concentration Tracker"):
         )
         
         if mismatches_list:
-            st.warning("⚠️ Warning: Timepoint mismatches were found between your Uploaded Files and your Setup File. Please check the 'Timepoint Mismatches' tab in the generated Excel file to see which samples were skipped.")
+            st.warning("⚠️ Warning: Timepoint mismatches were found between your Uploaded Files and your Setup File. Please check the 'Final Conc + Mismatches' tab in the generated Excel file to see recovered data.")
 
     else:
         st.error("Please upload BOTH the Setup file and the Main TSQ Export file(s).")
