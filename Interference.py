@@ -217,6 +217,10 @@ if st.button("Generate Dashboard"):
             ccqc_rows.append({"Sample Name": "Sample Name", "Area": "Area", "IS area": "IS area", "Calc.Conc.": "Calc.Conc.", "Raw.Conc.": "", "% Accuracy": "% Acc", "failed_ccqc": False})
             ccqc_chart.append((np.nan, np.nan, np.nan, np.nan, np.nan))
             
+            blk_a_area, blk_is_area = None, None
+            zero_a_area, zero_is_area = None, None
+            mph_a_area, mph_is_area = None, None
+            
             for index, row in df.iterrows():
                 s_name_raw = str(row[name_col]).strip()
                 s_name_up = s_name_raw.upper()
@@ -233,6 +237,16 @@ if st.button("Generate Dashboard"):
                 
                 raw_acc_val = str(row[acc_col]).strip() if acc_col else ""
                 acc_val = pd.to_numeric(raw_acc_val, errors='coerce') if raw_acc_val != "" else np.nan
+                
+                if 'BLK' in s_name_up or ('BLANK' in s_type_up and '+IS' not in s_name_up):
+                    if blk_a_area is None: blk_a_area = a_area
+                    if blk_is_area is None: blk_is_area = s_is_area
+                if 'ZERO' in s_name_up or 'AQSTD' in s_name_up or '+IS' in s_name_up:
+                    if zero_a_area is None: zero_a_area = a_area
+                    if zero_is_area is None: zero_is_area = s_is_area
+                if 'MPH' in s_name_up or 'ESO' in s_name_up or 'RCS' in s_name_up:
+                    if mph_a_area is None: mph_a_area = a_area
+                    if mph_is_area is None: mph_is_area = s_is_area
                 
                 failed_ccqc = False
                 if 'STANDARD' in s_type_up or 'QC' in s_type_up or 'QUALITY' in s_type_up:
@@ -369,6 +383,9 @@ if st.button("Generate Dashboard"):
                 'mqc_total': mqc_total, 'mqc_pass': mqc_pass, 
                 'hqc_total': hqc_total, 'hqc_pass': hqc_pass,
                 'std_a_area': std_a_area, 'std_zero_is_area': std_zero_is_area,
+                'blk_a_area': blk_a_area, 'blk_is_area': blk_is_area,
+                'zero_a_area': zero_a_area, 'zero_is_area': zero_is_area,
+                'mph_a_area': mph_a_area, 'mph_is_area': mph_is_area,
                 'carryover': carryover_samples, 'out_of_range': out_of_range_is, 'above_uloq': above_uloq
             }
             
@@ -511,7 +528,6 @@ if st.button("Generate Dashboard"):
             failed_ccqc_pct_fmt = workbook.add_format({**tnr, 'bg_color': '#FFFF00', 'bold': True, 'font_color': '#000000', 'border': 1, 'align': 'center', 'valign': 'vcenter', 'num_format': '0.00'})
             failed_ccqc_float_fmt = workbook.add_format({**tnr, 'bg_color': '#FFFF00', 'bold': True, 'font_color': '#000000', 'border': 1, 'align': 'center', 'valign': 'vcenter', 'num_format': '0.000'})
 
-            # QA Summary Sheet Configuration based on the specific template requirements[cite: 1]
             qa_ws = workbook.add_worksheet("QA Summary")
             qa_ws.set_column('A:B', 35, general_fmt)
             qa_ws.set_column('C:D', 35, general_fmt)
@@ -530,16 +546,60 @@ if st.button("Generate Dashboard"):
                 qa_ws.merge_range(qa_row, 0, qa_row, 3, "Acceptability of interference in Standard Blank, Standard Blank + IS and MPH/ESO/RCS", table_header_green)
                 qa_row += 1
                 
-                qa_ws.merge_range(qa_row, 0, qa_row, 1, "Area Observed for Standard Blank at Analyte RT:", data_white_left)
-                qa_ws.merge_range(qa_row, 2, qa_row, 3, "% Interference", data_white)
+                def calc_interf(area, ref_area):
+                    if pd.notna(area) and pd.notna(ref_area) and ref_area > 0:
+                        return (area / ref_area) * 100
+                    return "N/A"
+
+                std_a = meta.get('std_a_area')
+                avg_is = meta.get('avg_is_area')
+
+                blk_a = meta.get('blk_a_area')
+                blk_a_pct = calc_interf(blk_a, std_a)
+                
+                blk_is = meta.get('blk_is_area')
+                blk_is_pct = calc_interf(blk_is, avg_is)
+                
+                zero_a = meta.get('zero_a_area')
+                zero_a_pct = calc_interf(zero_a, std_a)
+                
+                mph_a = meta.get('mph_a_area')
+                mph_a_pct = calc_interf(mph_a, std_a)
+                
+                mph_is = meta.get('mph_is_area')
+                mph_is_pct = calc_interf(mph_is, avg_is)
+
+                qa_ws.write(qa_row, 0, "Area Observed for Standard Blank at Analyte RT:", data_white_left)
+                qa_ws.write(qa_row, 1, blk_a if pd.notna(blk_a) else "N/A", data_white_float if pd.notna(blk_a) else data_white)
+                qa_ws.write(qa_row, 2, "% Interference", data_white)
+                qa_ws.write(qa_row, 3, blk_a_pct, data_white_pct if isinstance(blk_a_pct, (int, float)) else data_white)
                 qa_row += 1
-                qa_ws.merge_range(qa_row, 0, qa_row, 1, "Area Observed for Standard Blank at IS RT:", data_white_left)
-                qa_ws.merge_range(qa_row, 2, qa_row, 3, "% Interference", data_white)
+                
+                qa_ws.write(qa_row, 0, "Area Observed for Standard Blank at IS RT:", data_white_left)
+                qa_ws.write(qa_row, 1, blk_is if pd.notna(blk_is) else "N/A", data_white_float if pd.notna(blk_is) else data_white)
+                qa_ws.write(qa_row, 2, "% Interference", data_white)
+                qa_ws.write(qa_row, 3, blk_is_pct, data_white_pct if isinstance(blk_is_pct, (int, float)) else data_white)
                 qa_row += 1
-                qa_ws.merge_range(qa_row, 0, qa_row, 1, "Area Observed for Standard Blank+IS at Analyte RT:", data_white_left)
-                qa_ws.merge_range(qa_row, 2, qa_row, 3, "% Interference", data_white)
+                
+                qa_ws.write(qa_row, 0, "Area Observed for Standard Blank+IS at Analyte RT:", data_white_left)
+                qa_ws.write(qa_row, 1, zero_a if pd.notna(zero_a) else "N/A", data_white_float if pd.notna(zero_a) else data_white)
+                qa_ws.write(qa_row, 2, "% Interference", data_white)
+                qa_ws.write(qa_row, 3, zero_a_pct, data_white_pct if isinstance(zero_a_pct, (int, float)) else data_white)
                 qa_row += 1
-                qa_ws.merge_range(qa_row, 0, qa_row, 1, "% Interference for Standard Blank, Standard Blank+IS:", data_white_left)
+                
+                qa_ws.write(qa_row, 0, "Area Observed for MPH/ESO/RCS at Analyte RT:", data_white_left)
+                qa_ws.write(qa_row, 1, mph_a if pd.notna(mph_a) else "N/A", data_white_float if pd.notna(mph_a) else data_white)
+                qa_ws.write(qa_row, 2, "% Interference", data_white)
+                qa_ws.write(qa_row, 3, mph_a_pct, data_white_pct if isinstance(mph_a_pct, (int, float)) else data_white)
+                qa_row += 1
+                
+                qa_ws.write(qa_row, 0, "Area Observed for MPH/ESO/RCS at IS RT:", data_white_left)
+                qa_ws.write(qa_row, 1, mph_is if pd.notna(mph_is) else "N/A", data_white_float if pd.notna(mph_is) else data_white)
+                qa_ws.write(qa_row, 2, "% Interference", data_white)
+                qa_ws.write(qa_row, 3, mph_is_pct, data_white_pct if isinstance(mph_is_pct, (int, float)) else data_white)
+                qa_row += 1
+
+                qa_ws.merge_range(qa_row, 0, qa_row, 1, "% Interference for Standard Blank, Standard Blank+IS, MPH/ESO/RCS:", data_white_left)
                 qa_ws.merge_range(qa_row, 2, qa_row, 3, "Accepted/Not Accepted", data_white)
                 qa_row += 1
                 
@@ -652,10 +712,8 @@ if st.button("Generate Dashboard"):
                 chart_data = meta['chart_data']
                 max_row = len(final_rows)
                 
-                # Column widths adjusted heavily for IS plot text visibility
                 ws.set_column('A:AD', 15, green_sheet_bg)
                 ws.set_column('A:A', 25, green_sheet_bg)
-                # Adjusted Columns G through M for IS Chart readability
                 ws.set_column('G:M', 28, green_sheet_bg)
                 
                 for r_idx, row_dict in enumerate(final_rows):
