@@ -638,41 +638,48 @@ if st.button("Generate Dashboard"):
                 current_row += 1
                 
                 # Interference section
+                # --- Helper for safe Excel writing ---
+                def safe_val(v):
+                    return "" if pd.isna(v) else v
+
+                ws_int.write(current_row, 0, "LLOQ area", data_white)
+                ws_int.merge_range(current_row, 1, current_row, 2, safe_val(meta.get('lloq_a_area')), data_white)
+                ws_int.merge_range(current_row, 3, current_row, 4, "Average IS area of accepted CC, QC samples", data_white)
+                ws_int.merge_range(current_row, 5, current_row, 6, safe_val(meta.get('avg_is_acc')), data_white)
+                current_row += 1
+                
+                # Interference section
                 ws_int.merge_range(current_row, 0, current_row, 6, "Acceptability of interference in Standard Blank, Standard Blank + IS and Matrix Blank (MPH/ESO/RCS)", table_header_gray)
                 current_row += 1
                 
                 ws_int.merge_range(current_row, 0, current_row, 3, "Area Observed for Standard Blank at Analyte RT:", data_white)
-                ws_int.write(current_row, 4, meta.get('std_blk_a', ''), data_white)
+                ws_int.write(current_row, 4, safe_val(meta.get('std_blk_a')), data_white)
                 ws_int.write(current_row, 5, "% Interference", data_white)
-                ws_int.write(current_row, 6, meta.get('pct_int_std_blk_a', ''), data_white_pct if pd.notna(meta.get('pct_int_std_blk_a')) else data_white)
+                ws_int.write(current_row, 6, safe_val(meta.get('pct_int_std_blk_a')), data_white_pct if pd.notna(meta.get('pct_int_std_blk_a')) else data_white)
                 current_row += 1
                 
                 ws_int.merge_range(current_row, 0, current_row, 3, "Area Observed for Standard Blank at IS RT:", data_white)
-                ws_int.write(current_row, 4, meta.get('std_blk_is', ''), data_white)
+                ws_int.write(current_row, 4, safe_val(meta.get('std_blk_is')), data_white)
                 ws_int.write(current_row, 5, "% Interference", data_white)
-                ws_int.write(current_row, 6, meta.get('pct_int_std_blk_is', ''), data_white_pct if pd.notna(meta.get('pct_int_std_blk_is')) else data_white)
+                ws_int.write(current_row, 6, safe_val(meta.get('pct_int_std_blk_is')), data_white_pct if pd.notna(meta.get('pct_int_std_blk_is')) else data_white)
                 current_row += 1
                 
                 ws_int.merge_range(current_row, 0, current_row, 3, "Area Observed for Standard Blank+IS at Analyte RT:", data_white)
-                ws_int.write(current_row, 4, meta.get('zero_a', ''), data_white)
+                ws_int.write(current_row, 4, safe_val(meta.get('zero_a')), data_white)
                 ws_int.write(current_row, 5, "% Interference", data_white)
-                ws_int.write(current_row, 6, meta.get('pct_int_zero_a', ''), data_white_pct if pd.notna(meta.get('pct_int_zero_a')) else data_white)
+                ws_int.write(current_row, 6, safe_val(meta.get('pct_int_zero_a')), data_white_pct if pd.notna(meta.get('pct_int_zero_a')) else data_white)
                 current_row += 1
                 
                 ws_int.merge_range(current_row, 0, current_row, 3, "Area Observed for Matrix Blank (MPH/ESO/RCS) at Analyte RT:", data_white)
-                ws_int.write(current_row, 4, meta.get('mat_blk_a', ''), data_white)
+                ws_int.write(current_row, 4, safe_val(meta.get('mat_blk_a')), data_white)
                 ws_int.write(current_row, 5, "% Interference", data_white)
-                ws_int.write(current_row, 6, meta.get('pct_int_mat_blk_a', ''), data_white_pct if pd.notna(meta.get('pct_int_mat_blk_a')) else data_white)
+                ws_int.write(current_row, 6, safe_val(meta.get('pct_int_mat_blk_a')), data_white_pct if pd.notna(meta.get('pct_int_mat_blk_a')) else data_white)
                 current_row += 1
                 
                 ws_int.merge_range(current_row, 0, current_row, 3, "Area Observed for Matrix Blank (MPH/ESO/RCS) at IS RT:", data_white)
-                ws_int.write(current_row, 4, meta.get('mat_blk_is', ''), data_white)
+                ws_int.write(current_row, 4, safe_val(meta.get('mat_blk_is')), data_white)
                 ws_int.write(current_row, 5, "% Interference", data_white)
-                ws_int.write(current_row, 6, meta.get('pct_int_mat_blk_is', ''), data_white_pct if pd.notna(meta.get('pct_int_mat_blk_is')) else data_white)
-                current_row += 1
-                
-                ws_int.merge_range(current_row, 0, current_row, 5, "% Interference for Standard Blank, Standard Blank+IS, Matrix Blank:", data_white)
-                ws_int.write(current_row, 6, meta.get('int_status', ''), data_white)
+                ws_int.write(current_row, 6, safe_val(meta.get('pct_int_mat_blk_is')), data_white_pct if pd.notna(meta.get('pct_int_mat_blk_is')) else data_white)
                 current_row += 1
                 
                 # CC Section
