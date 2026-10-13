@@ -432,7 +432,7 @@ if st.button("Generate Dashboard"):
             if any(val > 20 for val in [pct_int_std_blk_a, pct_int_zero_a, pct_int_mat_blk_a] if pd.notna(val)): int_status = "Not Accepted"
             if any(val > 5 for val in [pct_int_std_blk_is, pct_int_mat_blk_is] if pd.notna(val)): int_status = "Not Accepted"
                 
-            cc_status = "Accepted" if (cc_passed / cc_injected >= 0.75) if cc_injected > 0 else "N/A"
+            cc_status = ("Accepted" if (cc_passed / cc_injected >= 0.75) else "Not Accepted") if cc_injected > 0 else "N/A"
             
             half = len(qc_ordered) // 2
             set1 = qc_ordered[:half]
