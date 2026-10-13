@@ -68,6 +68,30 @@ def get_base_name(name):
     if not isinstance(name, str): return str(name)
     return re.sub(r'[-_](ISR\d*|R\d*|REPEAT\d*)$', '', name, flags=re.IGNORECASE).strip()
 
+def calc_qc_stats(qc_list):
+    stats = {'LQC': [0,0], 'MMQC': [0,0], 'MQC': [0,0], 'HQC': [0,0], 'Total': [0,0]}
+    for q in qc_list:
+        lvl = q['level']
+        if lvl in stats:
+            stats[lvl][0] += 1
+            stats['Total'][0] += 1
+            if q['passed']:
+                stats[lvl][1] += 1
+                stats['Total'][1] += 1
+    
+    level_pass = True
+    for lvl in ['LQC', 'MMQC', 'MQC', 'HQC']:
+        if stats[lvl][0] > 0 and (stats[lvl][1] / stats[lvl][0]) < 0.5:
+            level_pass = False
+            
+    global_pass = False
+    if stats['Total'][0] > 0 and (stats['Total'][1] / stats['Total'][0]) >= 0.67:
+        global_pass = True
+        
+    status = "Yes" if (level_pass and global_pass) else "No"
+    if stats['Total'][0] == 0: status = "-"
+    return stats, status
+
 if st.button("Generate Dashboard"):
     if setup_file and uploaded_files:
         st.success("Files received! Processing data...")
@@ -107,7 +131,6 @@ if st.button("Generate Dashboard"):
         global_samples = {}
         batch_meta_data = {}
         all_repeats_data = [] 
-        all_interference_data = [] 
         repeat_samples = {}
         isr_samples = {}
         
@@ -196,10 +219,21 @@ if st.button("Generate Dashboard"):
             file_dupes, file_sample_dupes = [], []
             seen_ccqc, seen_samples = set(), set()
             
+            # --- New Structural Tracking for Detailed Interference Matrix ---
+            cc_injected = 0
+            cc_passed = 0
+            failed_ccs = []
+            qc_ordered = []
+            accepted_is_areas = []
+            lloq_a_area = np.nan
+            
+            std_blk_a = np.nan; std_blk_is = np.nan
+            zero_a = np.nan
+            mat_blk_a = np.nan; mat_blk_is = np.nan
+            
             std_a_area, std_zero_is_area = None, None
             cc_pass, lqc_pass, mmqc_pass, mqc_pass, hqc_pass = 0, 0, 0, 0, 0
             out_of_range_is, above_uloq = [], []
-            carryover_samples = []
             
             cc_qc_df = df[df[type_col].astype(str).str.contains('Standard|QC|Quality', case=False, na=False)].copy()
             cc_qc_df[is_area_col] = pd.to_numeric(cc_qc_df[is_area_col], errors='coerce')
@@ -235,23 +269,58 @@ if st.button("Generate Dashboard"):
                 raw_acc_val = str(row[acc_col]).strip() if acc_col else ""
                 acc_val = pd.to_numeric(raw_acc_val, errors='coerce') if raw_acc_val != "" else np.nan
                 
-                # Flag if a CC or QC failed ICH M10 bounds dynamically
                 failed_ccqc = False
                 if 'STANDARD' in s_type_up or 'QC' in s_type_up or 'QUALITY' in s_type_up:
                     if pd.notna(acc_val):
-                        # LLOQ Standard limits: 80 - 120%
                         if ('STANDARD' in s_type_up or 'STD' in s_name_up) and ('-A' in s_name_up or '-1' in s_name_up):
                             if not (80 <= acc_val <= 120): failed_ccqc = True
                         else:
-                            # ALL other Standards and QCs limits: 85 - 115%
                             if not (85 <= acc_val <= 115): failed_ccqc = True
                     else:
                         failed_ccqc = True
                 
-                if ('STD-A' in s_name_up or '-1' in s_name_up) and std_a_area is None: std_a_area = a_area
-                if ('ZERO' in s_name_up or 'AQSTD' in s_name_up or '+IS' in s_name_up) and std_zero_is_area is None: std_zero_is_area = s_is_area
-                if 'BLANK' in s_type_up or 'BLK' in s_name_up or 'MOBILE' in s_name_up: carryover_samples.append({'name': s_name_raw, 'a_area': a_area, 'is_area': s_is_area})
+                # Structural collection logic
+                if 'STANDARD' in s_type_up or 'STD' in s_name_up:
+                    cc_injected += 1
+                    if not failed_ccqc:
+                        cc_passed += 1
+                        if pd.notna(s_is_area): accepted_is_areas.append(s_is_area)
+                    else:
+                        failed_ccs.append(s_name_raw)
+                        
+                    if ('-A' in s_name_up or '-1' in s_name_up) and pd.isna(lloq_a_area):
+                        lloq_a_area = a_area
                 
+                if 'QC' in s_type_up or 'QUALITY' in s_type_up:
+                    if not failed_ccqc and pd.notna(s_is_area):
+                        accepted_is_areas.append(s_is_area)
+                        
+                    level = "Unknown"
+                    if 'LQC' in s_name_up: level = 'LQC'
+                    elif 'MMQC' in s_name_up: level = 'MMQC'
+                    elif 'MQC' in s_name_up and 'MMQC' not in s_name_up: level = 'MQC'
+                    elif 'HQC' in s_name_up: level = 'HQC'
+                    qc_ordered.append({'level': level, 'passed': not failed_ccqc, 'name': s_name_raw})
+                
+                # Blanks collection logic
+                is_std_blk = False
+                is_zero = False
+                is_mat_blk = False
+                
+                if ('STD' in s_name_up and 'BLK' in s_name_up) or ('S-BLK' in s_name_up):
+                    is_std_blk = True
+                elif 'ZERO' in s_name_up or 'AQSTD' in s_name_up or '+IS' in s_name_up:
+                    is_zero = True
+                elif 'BLANK' in s_type_up or 'BLK' in s_name_up:
+                    is_mat_blk = True
+                    
+                if is_std_blk and pd.isna(std_blk_a):
+                    std_blk_a = a_area; std_blk_is = s_is_area
+                if is_zero and pd.isna(zero_a):
+                    zero_a = a_area
+                if is_mat_blk and not is_std_blk and not is_zero and pd.isna(mat_blk_a):
+                    mat_blk_a = a_area; mat_blk_is = s_is_area
+
                 if pd.notna(acc_val):
                     if 'STANDARD' in s_type_up or 'STD' in s_name_up:
                         if ('-A' in s_name_up or '-1' in s_name_up) and 80 <= acc_val <= 120: cc_pass += 1
@@ -305,7 +374,6 @@ if st.button("Generate Dashboard"):
                             file_sample_dupes.append(s_name_raw)
                         else:
                             seen_samples.add(s_name_up)
-                            # Direct storage of Exact string. Base mapping matches them below.
                             if file_category == "Main":
                                 global_samples[s_name_raw] = (conc, safe_sheet_name)
                             elif file_category == "Repeat":
@@ -330,29 +398,12 @@ if st.button("Generate Dashboard"):
             file_cc_dict['r'] = "" if pd.isna(r_val) else r_val
             cc_file_data.append(file_cc_dict)
             
-            # Anomaly Tracker only monitors Main files, ignores intentional Repeats/ISRs
             if file_category == "Main":
                 for smp in out_of_range_is:
                     all_repeats_data.append({"Batch Name": safe_sheet_name, "Sample Name": smp['name'], "Concentration": smp['conc'], "Reason Code": "Out of Range %IS"})
                 for smp in above_uloq:
                     all_repeats_data.append({"Batch Name": safe_sheet_name, "Sample Name": smp['name'], "Concentration": smp['conc'], "Reason Code": "Above ULOQ"})
             
-            # --- COLLECT DATA FOR GLOBAL INTERFERENCE CALCULATION SHEET ---
-            for smp in carryover_samples:
-                a_area = smp['a_area']
-                is_area = smp['is_area']
-                pct_a = (a_area / std_a_area) * 100 if std_a_area and pd.notna(a_area) and std_a_area > 0 else np.nan
-                pct_is = (is_area / std_zero_is_area) * 100 if std_zero_is_area and pd.notna(is_area) and std_zero_is_area > 0 else np.nan
-                
-                all_interference_data.append({
-                    "Batch Name": safe_sheet_name,
-                    "Sample name": smp['name'],
-                    "Analyte Area": a_area if pd.notna(a_area) else "",
-                    "IS area": is_area if pd.notna(is_area) else "",
-                    "% analyte": pct_a if pd.notna(pct_a) else "NA",
-                    "% IS": pct_is if pd.notna(pct_is) else "NA"
-                })
-
             for i in range(4):
                 q_dict = {
                     'Date of first injection': acq_date if i==0 else "", 'SUBJECT ID': subj_id if i==0 else "",
@@ -368,12 +419,45 @@ if st.button("Generate Dashboard"):
             final_rows = ccqc_rows + [avg_row, header_row] + sample_rows
             final_chart = ccqc_chart + [(np.nan, np.nan, np.nan, np.nan, np.nan), (np.nan, np.nan, np.nan, np.nan, np.nan)] + sample_chart
             
+            # --- Calculations for Advanced Interference Sheet ---
+            avg_is_acc = np.mean(accepted_is_areas) if accepted_is_areas else np.nan
+            
+            pct_int_std_blk_a = (std_blk_a / lloq_a_area * 100) if pd.notna(std_blk_a) and pd.notna(lloq_a_area) and lloq_a_area > 0 else np.nan
+            pct_int_std_blk_is = (std_blk_is / avg_is_acc * 100) if pd.notna(std_blk_is) and pd.notna(avg_is_acc) and avg_is_acc > 0 else np.nan
+            pct_int_zero_a = (zero_a / lloq_a_area * 100) if pd.notna(zero_a) and pd.notna(lloq_a_area) and lloq_a_area > 0 else np.nan
+            pct_int_mat_blk_a = (mat_blk_a / lloq_a_area * 100) if pd.notna(mat_blk_a) and pd.notna(lloq_a_area) and lloq_a_area > 0 else np.nan
+            pct_int_mat_blk_is = (mat_blk_is / avg_is_acc * 100) if pd.notna(mat_blk_is) and pd.notna(avg_is_acc) and avg_is_acc > 0 else np.nan
+            
+            int_status = "Accepted"
+            if any(val > 20 for val in [pct_int_std_blk_a, pct_int_zero_a, pct_int_mat_blk_a] if pd.notna(val)): int_status = "Not Accepted"
+            if any(val > 5 for val in [pct_int_std_blk_is, pct_int_mat_blk_is] if pd.notna(val)): int_status = "Not Accepted"
+                
+            cc_status = "Accepted" if (cc_passed / cc_injected >= 0.75) if cc_injected > 0 else "N/A"
+            
+            half = len(qc_ordered) // 2
+            set1 = qc_ordered[:half]
+            set2 = qc_ordered[half:]
+            
+            set1_stats, set1_status = calc_qc_stats(set1)
+            set2_stats, set2_status = calc_qc_stats(set2)
+            
             batch_meta_data[safe_sheet_name] = {
                 'rows': final_rows, 'chart_data': final_chart,
                 'slope': slope, 'intercept': intercept, 'r_val': r_val,
                 'cc_pass': cc_pass, 'lqc_pass': lqc_pass, 'mmqc_pass': mmqc_pass, 'mqc_pass': mqc_pass, 'hqc_pass': hqc_pass,
-                'std_a_area': std_a_area, 'std_zero_is_area': std_zero_is_area,
-                'carryover': carryover_samples[:3], 'out_of_range': out_of_range_is, 'above_uloq': above_uloq
+                'out_of_range': out_of_range_is, 'above_uloq': above_uloq,
+                
+                # Rich Interference / QC Set Data
+                'lloq_a_area': lloq_a_area, 'avg_is_acc': avg_is_acc,
+                'std_blk_a': std_blk_a, 'std_blk_is': std_blk_is,
+                'zero_a': zero_a,
+                'mat_blk_a': mat_blk_a, 'mat_blk_is': mat_blk_is,
+                'pct_int_std_blk_a': pct_int_std_blk_a, 'pct_int_std_blk_is': pct_int_std_blk_is,
+                'pct_int_zero_a': pct_int_zero_a, 'pct_int_mat_blk_a': pct_int_mat_blk_a, 'pct_int_mat_blk_is': pct_int_mat_blk_is,
+                'int_status': int_status,
+                'cc_injected': cc_injected, 'cc_passed': cc_passed, 'cc_status': cc_status, 'failed_ccs': failed_ccs,
+                'set1_stats': set1_stats, 'set1_status': set1_status,
+                'set2_stats': set2_stats, 'set2_status': set2_status
             }
             
             nom_check_msg = "All CC and QC concentration matching nominal value." if len(nominals) > 0 else "No nominals defined."
@@ -387,12 +471,6 @@ if st.button("Generate Dashboard"):
 
         excel_tabs["Summary"] = pd.DataFrame(summary_log)
         
-        # -- Global Interference Sheet Creation --
-        if all_interference_data:
-            excel_tabs["Interference calculation"] = pd.DataFrame(all_interference_data)
-        else:
-            excel_tabs["Interference calculation"] = pd.DataFrame([{"Batch Name": "-", "Sample name": "-", "Analyte Area": "-", "IS area": "-", "% analyte": "-", "% IS": "-"}])
-        
         # -- 1. Repeats Sheet Sorted Ascending by Sample Name --
         if all_repeats_data:
             rep_df = pd.DataFrame(all_repeats_data)
@@ -401,7 +479,6 @@ if st.button("Generate Dashboard"):
         else:
             excel_tabs["Repeats"] = pd.DataFrame([{"Batch Name": "-", "Sample Name": "-", "Concentration": "-", "Reason Code": "No Repeats Required"}])
             
-        # -- Build Robust Base-String Mappings for Repeats & ISRs --
         base_to_initial = {}
         for s_name_raw, (conc, orig_file) in global_samples.items():
             base_to_initial[get_base_name(s_name_raw).upper()] = (conc, s_name_raw, orig_file)
@@ -414,7 +491,6 @@ if st.button("Generate Dashboard"):
         for s_name_raw, (conc, isr_file) in isr_samples.items():
             base_to_isr[get_base_name(s_name_raw).upper()] = (conc, s_name_raw, isr_file)
 
-        # -- 2. Build Repeat Analysis Tab (Sorted Alphanumerically) --
         repeat_analysis_rows = []
         s_no = 1
         sorted_repeats = sorted(base_to_repeat.items(), key=lambda x: natural_sort_key(x[1][1]))
@@ -441,14 +517,11 @@ if st.button("Generate Dashboard"):
         else:
             excel_tabs["Repeat Analysis"] = pd.DataFrame([{"S.No": "-", "Initial File Name": "-", "Repeat File Name": "-", "Sample Name": "-", "Initial Concentration": "-", "Repeat Concentration": "-", "% Difference": "-"}])
             
-        # -- 3. Build ISR Analysis Tab (Sorted Alphanumerically) --
         isr_analysis_rows = []
         s_no_isr = 1
         sorted_isr = sorted(base_to_isr.items(), key=lambda x: natural_sort_key(x[1][1]))
         for base_up, (isr_conc, isr_s_name_raw, isr_file) in sorted_isr:
             init_conc, init_s_name_raw, orig_file = base_to_initial.get(base_up, (np.nan, "Missing", "Unknown"))
-            
-            # Adopt Repeat value if it exists, otherwise use Initial
             rep_tuple = base_to_repeat.get(base_up)
             final_prior_conc = rep_tuple[0] if rep_tuple else init_conc
             
@@ -505,11 +578,11 @@ if st.button("Generate Dashboard"):
             qc_df = pd.concat([pd.DataFrame([row_nom_qc, row_low_qc, row_up_qc]), qc_df_data], ignore_index=True)
             excel_tabs["QC"] = qc_df[qc_columns]
 
-        # --- 4. EXPORT WRITER ---
+        # --- EXPORT WRITER ---
         output = io.BytesIO()
         with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
             
-            for sh_name in ["Summary", "Interference calculation", "Repeats", "Repeat Analysis", "ISR Analysis", "CC", "QC"]:
+            for sh_name in ["Summary", "Repeats", "Repeat Analysis", "ISR Analysis", "CC", "QC"]:
                 if sh_name in excel_tabs:
                     excel_tabs[sh_name].to_excel(writer, sheet_name=sh_name, index=False)
             
@@ -545,7 +618,138 @@ if st.button("Generate Dashboard"):
             failed_ccqc_pct_fmt = workbook.add_format({**tnr, 'bg_color': '#FFFF00', 'bold': True, 'font_color': '#000000', 'border': 1, 'align': 'center', 'valign': 'vcenter', 'num_format': '0.00'})
             failed_ccqc_float_fmt = workbook.add_format({**tnr, 'bg_color': '#FFFF00', 'bold': True, 'font_color': '#000000', 'border': 1, 'align': 'center', 'valign': 'vcenter', 'num_format': '0.000'})
 
-            for sheet_name in ["Summary", "Interference calculation", "Repeats", "Repeat Analysis", "ISR Analysis", "CC", "QC"]:
+            # --- BUILD ADVANCED INTERFERENCE CALCULATION SHEET ---
+            ws_int = workbook.add_worksheet("Interference calculation")
+            ws_int.set_column('A:A', 35, general_fmt)
+            ws_int.set_column('B:E', 15, general_fmt)
+            ws_int.set_column('F:G', 20, general_fmt)
+            
+            current_row = 0
+            for safe_sheet_name, meta in batch_meta_data.items():
+                
+                # Header row
+                ws_int.merge_range(current_row, 0, current_row, 6, f"Batch Name: {safe_sheet_name}", table_header_green)
+                current_row += 1
+                
+                ws_int.write(current_row, 0, "LLOQ area", data_white)
+                ws_int.merge_range(current_row, 1, current_row, 2, meta.get('lloq_a_area', ''), data_white)
+                ws_int.merge_range(current_row, 3, current_row, 4, "Average IS area of accepted CC, QC samples", data_white)
+                ws_int.merge_range(current_row, 5, current_row, 6, meta.get('avg_is_acc', ''), data_white)
+                current_row += 1
+                
+                # Interference section
+                ws_int.merge_range(current_row, 0, current_row, 6, "Acceptability of interference in Standard Blank, Standard Blank + IS and Matrix Blank (MPH/ESO/RCS)", table_header_gray)
+                current_row += 1
+                
+                ws_int.merge_range(current_row, 0, current_row, 3, "Area Observed for Standard Blank at Analyte RT:", data_white)
+                ws_int.write(current_row, 4, meta.get('std_blk_a', ''), data_white)
+                ws_int.write(current_row, 5, "% Interference", data_white)
+                ws_int.write(current_row, 6, meta.get('pct_int_std_blk_a', ''), data_white_pct if pd.notna(meta.get('pct_int_std_blk_a')) else data_white)
+                current_row += 1
+                
+                ws_int.merge_range(current_row, 0, current_row, 3, "Area Observed for Standard Blank at IS RT:", data_white)
+                ws_int.write(current_row, 4, meta.get('std_blk_is', ''), data_white)
+                ws_int.write(current_row, 5, "% Interference", data_white)
+                ws_int.write(current_row, 6, meta.get('pct_int_std_blk_is', ''), data_white_pct if pd.notna(meta.get('pct_int_std_blk_is')) else data_white)
+                current_row += 1
+                
+                ws_int.merge_range(current_row, 0, current_row, 3, "Area Observed for Standard Blank+IS at Analyte RT:", data_white)
+                ws_int.write(current_row, 4, meta.get('zero_a', ''), data_white)
+                ws_int.write(current_row, 5, "% Interference", data_white)
+                ws_int.write(current_row, 6, meta.get('pct_int_zero_a', ''), data_white_pct if pd.notna(meta.get('pct_int_zero_a')) else data_white)
+                current_row += 1
+                
+                ws_int.merge_range(current_row, 0, current_row, 3, "Area Observed for Matrix Blank (MPH/ESO/RCS) at Analyte RT:", data_white)
+                ws_int.write(current_row, 4, meta.get('mat_blk_a', ''), data_white)
+                ws_int.write(current_row, 5, "% Interference", data_white)
+                ws_int.write(current_row, 6, meta.get('pct_int_mat_blk_a', ''), data_white_pct if pd.notna(meta.get('pct_int_mat_blk_a')) else data_white)
+                current_row += 1
+                
+                ws_int.merge_range(current_row, 0, current_row, 3, "Area Observed for Matrix Blank (MPH/ESO/RCS) at IS RT:", data_white)
+                ws_int.write(current_row, 4, meta.get('mat_blk_is', ''), data_white)
+                ws_int.write(current_row, 5, "% Interference", data_white)
+                ws_int.write(current_row, 6, meta.get('pct_int_mat_blk_is', ''), data_white_pct if pd.notna(meta.get('pct_int_mat_blk_is')) else data_white)
+                current_row += 1
+                
+                ws_int.merge_range(current_row, 0, current_row, 5, "% Interference for Standard Blank, Standard Blank+IS, Matrix Blank:", data_white)
+                ws_int.write(current_row, 6, meta.get('int_status', ''), data_white)
+                current_row += 1
+                
+                # CC Section
+                ws_int.merge_range(current_row, 0, current_row, 6, "Acceptability of Non-Zero calibration curve standards", table_header_gray)
+                current_row += 1
+                ws_int.merge_range(current_row, 0, current_row, 2, "CC ID: (All Passed)", data_white)
+                ws_int.merge_range(current_row, 3, current_row, 4, "'r' value", data_white)
+                ws_int.merge_range(current_row, 5, current_row, 6, meta.get('r_val', ''), data_white_r)
+                current_row += 1
+                ws_int.merge_range(current_row, 0, current_row, 2, "No. of CC standards injected", data_white)
+                ws_int.write(current_row, 3, meta.get('cc_injected', ''), data_white)
+                ws_int.write(current_row, 4, "No. of CC standard accepted", data_white)
+                ws_int.merge_range(current_row, 5, current_row, 6, meta.get('cc_passed', ''), data_white)
+                current_row += 1
+                ws_int.merge_range(current_row, 0, current_row, 1, "Details of Failed CC standard(s), if any", data_white)
+                failed_str = ", ".join(meta.get('failed_ccs', [])) if meta.get('failed_ccs') else "None"
+                ws_int.merge_range(current_row, 2, current_row, 6, failed_str, data_white)
+                current_row += 1
+                ws_int.merge_range(current_row, 0, current_row, 3, "Calibration curve status:", data_white)
+                ws_int.merge_range(current_row, 4, current_row, 6, meta.get('cc_status', ''), data_white)
+                current_row += 1
+                
+                # QC Section
+                ws_int.merge_range(current_row, 0, current_row, 6, "Acceptability of QC Samples", table_header_gray)
+                current_row += 1
+                ws_int.merge_range(current_row, 0, current_row+1, 0, "QC ID", data_white)
+                ws_int.merge_range(current_row, 1, current_row, 2, "Total No. of QC Injected", data_white)
+                ws_int.merge_range(current_row, 3, current_row, 4, "Total No. of QC Passed", data_white)
+                ws_int.merge_range(current_row, 5, current_row, 6, "Acceptance status Yes/ No", data_white)
+                current_row += 1
+                ws_int.write(current_row, 1, "Set-1", data_white); ws_int.write(current_row, 2, "Set-2", data_white)
+                ws_int.write(current_row, 3, "Set-1", data_white); ws_int.write(current_row, 4, "Set-2", data_white)
+                ws_int.write(current_row, 5, "Set-1", data_white); ws_int.write(current_row, 6, "Set-2", data_white)
+                current_row += 1
+                
+                set1_stats = meta.get('set1_stats', {})
+                set2_stats = meta.get('set2_stats', {})
+                
+                for lvl in ['LQC', 'MMQC', 'MQC', 'HQC', 'Total']:
+                    display_lvl = f"Total no. of QCs" if lvl == 'Total' else lvl
+                    ws_int.write(current_row, 0, display_lvl, data_white)
+                    ws_int.write(current_row, 1, set1_stats.get(lvl, [0,0])[0], data_white)
+                    ws_int.write(current_row, 2, set2_stats.get(lvl, [0,0])[0], data_white)
+                    ws_int.write(current_row, 3, set1_stats.get(lvl, [0,0])[1], data_white)
+                    ws_int.write(current_row, 4, set2_stats.get(lvl, [0,0])[1], data_white)
+                    if lvl == 'Total':
+                        ws_int.write(current_row, 5, meta.get('set1_status', ''), data_white)
+                        ws_int.write(current_row, 6, meta.get('set2_status', ''), data_white)
+                    else:
+                        ws_int.write(current_row, 5, "", data_white)
+                        ws_int.write(current_row, 6, "", data_white)
+                    current_row += 1
+                
+                # Repeat Section for anomalies
+                ws_int.merge_range(current_row, 0, current_row, 6, "Repeat Sample Identification", table_header_gray)
+                current_row += 1
+                ws_int.write(current_row, 0, "S.No", data_white)
+                ws_int.merge_range(current_row, 1, current_row, 3, "Sample Name", data_white)
+                ws_int.merge_range(current_row, 4, current_row, 6, "Repeat code", data_white)
+                current_row += 1
+                
+                batch_repeats = [r for r in all_repeats_data if r["Batch Name"] == safe_sheet_name]
+                if batch_repeats:
+                    for s_no, rpt in enumerate(batch_repeats, 1):
+                        ws_int.write(current_row, 0, s_no, data_white)
+                        ws_int.merge_range(current_row, 1, current_row, 3, rpt["Sample Name"], data_white)
+                        ws_int.merge_range(current_row, 4, current_row, 6, rpt["Reason Code"], data_white)
+                        current_row += 1
+                else:
+                    ws_int.write(current_row, 0, "-", data_white)
+                    ws_int.merge_range(current_row, 1, current_row, 3, "None", data_white)
+                    ws_int.merge_range(current_row, 4, current_row, 6, "-", data_white)
+                    current_row += 1
+                    
+                current_row += 3 # Buffer between batches
+
+            for sheet_name in ["Summary", "Repeats", "Repeat Analysis", "ISR Analysis", "CC", "QC"]:
                 if sheet_name in excel_tabs:
                     df_tab = excel_tabs[sheet_name]
                     worksheet = writer.sheets[sheet_name]
@@ -557,11 +761,6 @@ if st.button("Generate Dashboard"):
                         for row_num, row_data in enumerate(df_tab.values):
                             row_fmt = success_fmt if row_data[1] == "SUCCESS" else failed_fmt
                             for col_num, value in enumerate(row_data): worksheet.write(row_num + 1, col_num, value, row_fmt)
-                            
-                    elif sheet_name == "Interference calculation":
-                        worksheet.set_column('A:B', 30, general_fmt)
-                        worksheet.set_column('C:D', 15, general_fmt)
-                        worksheet.set_column('E:F', 15, pct_fmt)
                     
                     elif sheet_name == "Repeats":
                         worksheet.set_column('B:B', 30, general_fmt)
@@ -690,23 +889,6 @@ if st.button("Generate Dashboard"):
                 ws.write('G10', 'HQC', table_header_gray)
                 ws.write('H10', meta.get('hqc_pass', ''), data_white)
                 
-                co_headers = ['Sample name', 'Analyte Area', 'IS area', '% analyte', '% IS']
-                for c_idx, h in enumerate(co_headers): ws.write(12, 6 + c_idx, h, table_header_green)
-                    
-                co_samples = meta.get('carryover', [])
-                for r_idx, smp in enumerate(co_samples):
-                    r = 13 + r_idx
-                    a_area = smp['a_area']
-                    is_area = smp['is_area']
-                    pct_a = (a_area / meta['std_a_area']) * 100 if meta.get('std_a_area') and pd.notna(a_area) and meta['std_a_area'] > 0 else np.nan
-                    pct_is = (is_area / meta['std_zero_is_area']) * 100 if meta.get('std_zero_is_area') and pd.notna(is_area) and meta['std_zero_is_area'] > 0 else np.nan
-                    
-                    ws.write(r, 6, smp['name'], data_white)
-                    ws.write(r, 7, "" if pd.isna(a_area) else a_area, data_white)
-                    ws.write(r, 8, "" if pd.isna(is_area) else is_area, data_white)
-                    ws.write(r, 9, "NA" if pd.isna(pct_a) else pct_a, data_white_pct if pd.notna(pct_a) else data_white)
-                    ws.write(r, 10, "NA" if pd.isna(pct_is) else pct_is, data_white_pct if pd.notna(pct_is) else data_white)
-                
                 if max_row > 0:
                     chart1 = workbook.add_chart({'type': 'scatter'})
                     chart1.add_series({'name': 'Samples', 'categories': [safe_sheet_name, 1, 26, max_row-1, 26], 'values': [safe_sheet_name, 1, 29, max_row-1, 29], 'marker': {'type': 'circle', 'size': 5, 'fill': {'color': '#4F81BD'}, 'border': {'none': True}}, 'line': {'none': True}})
@@ -731,25 +913,6 @@ if st.button("Generate Dashboard"):
                     chart2.show_blanks_as('span')
                     ws.insert_chart('G30', chart2)
                     
-                    or_start = 45
-                    ws.write(or_start, 6, "Out of Range %IS Sample", table_header_green)
-                    ws.write(or_start, 7, "Concentration", table_header_green)
-                    ws.write(or_start, 8, "Above ULOQ Samples", table_header_green)
-                    ws.write(or_start, 9, "Concentration", table_header_green)
-                    ws.write(or_start, 10, "Dose Repeats", table_header_green)
-                    ws.write(or_start, 11, "Concentration", table_header_green)
-                    
-                    out_is = meta.get('out_of_range', [])
-                    for i, smp in enumerate(out_is):
-                        ws.write(or_start + 1 + i, 6, smp['name'], data_white)
-                        ws.write(or_start + 1 + i, 7, smp['conc'], data_yellow_float if pd.notna(smp['conc']) and smp['conc'] > uloq else data_white_float)
-                        
-                    above_u = meta.get('above_uloq', [])
-                    for i, smp in enumerate(above_u):
-                        ws.write(or_start + 1 + i, 8, smp['name'], data_white)
-                        ws.write(or_start + 1 + i, 9, smp['conc'], data_yellow_float)
-
-            # --- APPLY BORDERS, STATS, AND FAILURE FORMATTING TO CC AND QC TABS ---
             for target_sheet in ["CC", "QC"]:
                 if target_sheet in excel_tabs:
                     ws = writer.sheets[target_sheet]
@@ -822,191 +985,7 @@ if st.button("Generate Dashboard"):
                         ws.write_formula(stat_row + 3, col_num, f"=IFERROR(({col_letter}{stat_row + 1}/{col_letter}2)*100, \"\")", pct_fmt)
                         ws.conditional_format(data_range, {'type': 'formula', 'criteria': f"=AND(ISNUMBER({col_letter}5), OR({col_letter}5<{col_letter}$3, {col_letter}5>{col_letter}$4))", 'format': yellow_flag})
 
-            # --- CONCENTRATION DATA TABS (INITIAL & REPEATS) ---
-            mapped_samples = {}
-            if num_subj > 0 and periods_list and timepoints_list:
-                for s_name, (conc, orig_file) in global_samples.items():
-                    parts = re.split(r'[-_]', s_name)
-                    subj_str = parts[0] if len(parts) > 0 else s_name
-                    period_str = parts[1] if len(parts) > 1 else ""
-                    tp_str = parts[2] if len(parts) > 2 else ""
-                    
-                    subj_nums = re.findall(r'\d+', subj_str)
-                    subj_int = int(subj_nums[-1]) if subj_nums else 0
-                    period_clean = period_str.strip().upper()
-                    
-                    tp_nums = re.findall(r'\d+\.\d+|\d+', tp_str)
-                    tp_float = float(tp_nums[0]) if tp_nums else -1.0
-                    if "PRE" in tp_str.upper(): tp_float = -1.0
-                    
-                    mapped_samples[(subj_int, period_clean, tp_float)] = (conc, s_name, orig_file)
-            
-            ws_conc = workbook.add_worksheet("Concentration Data")
-            ws_conc.set_column('A:B', 15, general_fmt)
-            ws_conc.set_column('C:C', 15, general_fmt)
-            ws_conc.set_column('D:D', 20, conc_fmt)
-            ws_conc.set_column('E:E', 25, general_fmt)
-            
-            conc_headers = ["Subject No.", "Period No.", "Timepoints", "Conc.(ng/mL)", "Sample Name"]
-            for col_num, header in enumerate(conc_headers): ws_conc.write(0, col_num, header, table_header_green)
-                
-            row_idx = 1
-            if num_subj > 0 and periods_list and timepoints_list:
-                for subj_idx in range(1, num_subj + 1):
-                    subj_formatted = f"S{subj_idx:03d}"
-                    for period_val in periods_list:
-                        period_clean = period_val.strip().upper()
-                        for tp_val in timepoints_list:
-                            tp_nums = re.findall(r'\d+\.\d+|\d+', str(tp_val))
-                            tp_float = float(tp_nums[0]) if tp_nums else -1.0
-                            if "PRE" in str(tp_val).upper(): tp_float = -1.0
-                            
-                            lookup_key = (subj_idx, period_clean, tp_float)
-                            if lookup_key in mapped_samples:
-                                conc, real_s_name, orig_file = mapped_samples[lookup_key]
-                                display_conc = "BLQ" if (pd.isna(conc) or (pd.notna(lloq) and conc < lloq)) else conc
-                                s_name_out = real_s_name
-                            else:
-                                display_conc = "M"
-                                s_name_out = "Missing"
-                                
-                            ws_conc.write(row_idx, 0, subj_formatted, data_white)
-                            ws_conc.write(row_idx, 1, period_val, data_white)
-                            ws_conc.write(row_idx, 2, f"'{tp_val}", data_white)
-                            ws_conc.write(row_idx, 3, display_conc, data_white if display_conc in ["BLQ", "M"] else data_white_float)
-                            ws_conc.write(row_idx, 4, s_name_out, data_white)
-                            row_idx += 1
-            else:
-                for s_name, (conc, orig_file) in sorted(global_samples.items(), key=lambda x: extract_sort_num(x[0])):
-                    display_conc = "BLQ" if (pd.isna(conc) or (pd.notna(lloq) and conc < lloq)) else conc
-                    parts = re.split(r'[-_]', s_name)
-                    subj = parts[0] if len(parts) > 0 else s_name
-                    period = parts[1] if len(parts) > 1 else ""
-                    timep = parts[2] if len(parts) > 2 else ""
-                    if subj.startswith('S') and subj[1:].isdigit(): subj = f"S{int(subj[1:]):03d}"
-                        
-                    ws_conc.write(row_idx, 0, subj, data_white)
-                    ws_conc.write(row_idx, 1, period, data_white)
-                    ws_conc.write(row_idx, 2, f"'{timep}", data_white)
-                    ws_conc.write(row_idx, 3, display_conc, data_white if display_conc == "BLQ" else data_white_float)
-                    ws_conc.write(row_idx, 4, s_name, data_white)
-                    row_idx += 1
-
-            if repeat_files:
-                ws_rep = workbook.add_worksheet("Final Conc After Repeat")
-                ws_rep.set_column('A:B', 15, general_fmt)
-                ws_rep.set_column('C:C', 15, general_fmt)
-                ws_rep.set_column('D:D', 20, conc_fmt)
-                ws_rep.set_column('E:E', 25, general_fmt)
-                ws_rep.set_column('F:F', 20, conc_fmt)
-                ws_rep.set_column('G:G', 20, pct_fmt)
-                
-                rep_headers = ["Subject No.", "Period No.", "Timepoints", "Final Conc.(ng/mL)", "Sample Name", "Initial Conc.(ng/mL)", "% Difference"]
-                for col_num, header in enumerate(rep_headers): ws_rep.write(0, col_num, header, table_header_green)
-                
-                row_idx = 1
-                if num_subj > 0 and periods_list and timepoints_list:
-                    for subj_idx in range(1, num_subj + 1):
-                        subj_formatted = f"S{subj_idx:03d}"
-                        for period_val in periods_list:
-                            period_clean = period_val.strip().upper()
-                            for tp_val in timepoints_list:
-                                tp_nums = re.findall(r'\d+\.\d+|\d+', str(tp_val))
-                                tp_float = float(tp_nums[0]) if tp_nums else -1.0
-                                if "PRE" in str(tp_val).upper(): tp_float = -1.0
-                                
-                                found_match = False
-                                for base_up, (initial_conc, real_s_name, orig_file) in base_to_initial.items():
-                                    parts = re.split(r'[-_]', real_s_name)
-                                    subj_str = parts[0] if len(parts) > 0 else real_s_name
-                                    p_str = parts[1] if len(parts) > 1 else ""
-                                    t_str = parts[2] if len(parts) > 2 else ""
-                                    
-                                    s_nums = re.findall(r'\d+', subj_str)
-                                    s_int = int(s_nums[-1]) if s_nums else 0
-                                    p_clean = p_str.strip().upper()
-                                    
-                                    t_nums = re.findall(r'\d+\.\d+|\d+', t_str)
-                                    t_flt = float(t_nums[0]) if t_nums else -1.0
-                                    if "PRE" in t_str.upper(): t_flt = -1.0
-                                    
-                                    if s_int == subj_idx and p_clean == period_clean and t_flt == tp_float:
-                                        
-                                        repeat_conc, repeat_s_name_raw, rep_file = base_to_repeat.get(base_up, (np.nan, None, ""))
-                                        has_repeat = repeat_s_name_raw is not None
-                                        
-                                        final_conc = repeat_conc if has_repeat else initial_conc
-                                        final_s_name = repeat_s_name_raw if has_repeat else real_s_name
-                                        
-                                        display_final = "BLQ" if (pd.isna(final_conc) or (pd.notna(lloq) and final_conc < lloq)) else final_conc
-                                        display_initial = "BLQ" if (pd.isna(initial_conc) or (pd.notna(lloq) and initial_conc < lloq)) else initial_conc
-                                        
-                                        pct_diff = ""
-                                        if has_repeat and pd.notna(initial_conc) and pd.notna(repeat_conc) and display_initial != "BLQ" and display_final != "BLQ" and initial_conc > 0:
-                                            pct_diff = ((repeat_conc - initial_conc) / ((initial_conc + repeat_conc) / 2)) * 100
-                                            
-                                        ws_rep.write(row_idx, 0, subj_formatted, data_white)
-                                        ws_rep.write(row_idx, 1, period_val, data_white)
-                                        ws_rep.write(row_idx, 2, f"'{tp_val}", data_white)
-                                        ws_rep.write(row_idx, 3, display_final, data_white if display_final in ["BLQ", "M"] else data_white_float)
-                                        ws_rep.write(row_idx, 4, final_s_name, data_white)
-                                        
-                                        if has_repeat:
-                                            ws_rep.write(row_idx, 5, display_initial, data_white if display_initial in ["BLQ", "M"] else data_white_float)
-                                            ws_rep.write(row_idx, 6, pct_diff, data_white_pct if pct_diff != "" else data_white)
-                                        else:
-                                            ws_rep.write(row_idx, 5, "", data_white)
-                                            ws_rep.write(row_idx, 6, "", data_white)
-                                            
-                                        found_match = True
-                                        break
-                                        
-                                if not found_match:
-                                    ws_rep.write(row_idx, 0, subj_formatted, data_white)
-                                    ws_rep.write(row_idx, 1, period_val, data_white)
-                                    ws_rep.write(row_idx, 2, f"'{tp_val}", data_white)
-                                    ws_rep.write(row_idx, 3, "M", data_white)
-                                    ws_rep.write(row_idx, 4, "Missing", data_white)
-                                    ws_rep.write(row_idx, 5, "", data_white)
-                                    ws_rep.write(row_idx, 6, "", data_white)
-                                    
-                                row_idx += 1
-                else:
-                    for s_name_raw, (initial_conc, orig_file) in sorted(global_samples.items(), key=lambda x: extract_sort_num(x[0])):
-                        parts = re.split(r'[-_]', s_name_raw)
-                        subj = parts[0] if len(parts) > 0 else s_name_raw
-                        period = parts[1] if len(parts) > 1 else ""
-                        timep = parts[2] if len(parts) > 2 else ""
-                        if subj.startswith('S') and subj[1:].isdigit(): subj = f"S{int(subj[1:]):03d}"
-                        
-                        base_up = get_base_name(s_name_raw).upper()
-                        repeat_conc, repeat_s_name_raw, rep_file = base_to_repeat.get(base_up, (np.nan, None, ""))
-                        
-                        has_repeat = repeat_s_name_raw is not None
-                        final_conc = repeat_conc if has_repeat else initial_conc
-                        final_s_name = repeat_s_name_raw if has_repeat else s_name_raw
-                        
-                        display_final = "BLQ" if (pd.isna(final_conc) or (pd.notna(lloq) and final_conc < lloq)) else final_conc
-                        display_initial = "BLQ" if (pd.isna(initial_conc) or (pd.notna(lloq) and initial_conc < lloq)) else initial_conc
-                        
-                        pct_diff = ""
-                        if has_repeat and pd.notna(initial_conc) and pd.notna(repeat_conc) and display_initial != "BLQ" and display_final != "BLQ" and initial_conc > 0:
-                            pct_diff = ((repeat_conc - initial_conc) / ((initial_conc + repeat_conc) / 2)) * 100
-                            
-                        ws_rep.write(row_idx, 0, subj, data_white)
-                        ws_rep.write(row_idx, 1, period, data_white)
-                        ws_rep.write(row_idx, 2, f"'{timep}", data_white)
-                        ws_rep.write(row_idx, 3, display_final, data_white if display_final == "BLQ" else data_white_float)
-                        ws_rep.write(row_idx, 4, final_s_name, data_white)
-                        if has_repeat:
-                            ws_rep.write(row_idx, 5, display_initial, data_white if display_initial == "BLQ" else data_white_float)
-                            ws_rep.write(row_idx, 6, pct_diff, data_white_pct if pct_diff != "" else data_white)
-                        else:
-                            ws_rep.write(row_idx, 5, "", data_white)
-                            ws_rep.write(row_idx, 6, "", data_white)
-                        row_idx += 1
-
-        st.success("Dashboard successfully generated with Automated Repeats Tracker!")
+        st.success("Dashboard successfully generated with Automated QC Set Rules and Detailed Interference!")
         st.download_button(
             label="Download Master Excel Dashboard",
             data=output.getvalue(),
