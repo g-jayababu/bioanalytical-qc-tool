@@ -720,7 +720,146 @@ if st.button("Generate Dashboard"):
                     for i, smp in enumerate(above_u):
                         ws.write(or_start + 1 + i, 8, smp['name'], data_white)
                         ws.write(or_start + 1 + i, 9, smp['conc'], data_yellow_float)
+            # --- ADD INTERFERENCE CALCULATION SHEET FOR EACH BATCH ---
+                    int_sheet_name = f"Int_{safe_sheet_name}"[:31] # Ensure < 31 chars
+                    ws_int = workbook.add_worksheet(int_sheet_name)
+                    
+                    # Define formats for the form
+                    form_border = workbook.add_format({**tnr, 'border': 1, 'align': 'left', 'valign': 'vcenter'})
+                    form_border_center = workbook.add_format({**tnr, 'border': 1, 'align': 'center', 'valign': 'vcenter'})
+                    form_header = workbook.add_format({**tnr, 'bold': True, 'border': 1, 'align': 'center', 'valign': 'vcenter'})
+                    form_bold_left = workbook.add_format({**tnr, 'bold': True, 'border': 1, 'align': 'left', 'valign': 'vcenter'})
 
+                    # Column widths
+                    ws_int.set_column('A:A', 25)
+                    ws_int.set_column('B:B', 20)
+                    ws_int.set_column('C:C', 20)
+                    ws_int.set_column('D:D', 15)
+                    ws_int.set_column('E:E', 20)
+                    ws_int.set_column('F:F', 15)
+                    ws_int.set_column('G:G', 20)
+                    ws_int.set_column('H:H', 15)
+
+                    # Row 0: Study No, Batch, LCMS ID
+                    ws_int.write('A1', 'Study No.:', form_border)
+                    ws_int.write('B1', study_num, form_border_center)
+                    ws_int.write('C1', 'Batch/Subject No.', form_border)
+                    ws_int.merge_range('D1:E1', safe_sheet_name, form_border_center)
+                    ws_int.write('F1', 'LCMS ID:', form_border)
+                    ws_int.merge_range('G1:H1', 'TSQ Quantis Plus', form_border_center) # Using your specified instrument
+
+                    # Row 1: LLOQ area, Avg IS Area
+                    ws_int.write('A2', 'LLOQ area', form_border)
+                    ws_int.write('B2', meta.get('std_a_area', ''), form_border_center)
+                    ws_int.merge_range('C2:F2', 'Average IS area of accepted CC, QC samples', form_border)
+                    ws_int.merge_range('G2:H2', meta.get('std_zero_is_area', ''), form_border_center)
+
+                    # Row 2: Header
+                    ws_int.merge_range('A3:H3', 'Acceptability of interference in Standard Blank, Standard Blank + IS and MPH/ESO/RCS', form_header)
+
+                    # Carryover / Blank data extraction (if available in batch)
+                    std_blank_analyte = meta['carryover'][0]['a_area'] if len(meta['carryover']) > 0 else ""
+                    std_blank_is = meta['carryover'][0]['is_area'] if len(meta['carryover']) > 0 else ""
+                    std_blank_plus_is = meta['carryover'][1]['a_area'] if len(meta['carryover']) > 1 else "" # Assuming 2nd is Zero
+                    
+                    # Rows 3-7: Interference checks
+                    ws_int.merge_range('A4:C4', 'Area Observed for Standard Blank at Analyte RT:', form_border)
+                    ws_int.write('D4', std_blank_analyte, form_border_center)
+                    ws_int.merge_range('E4:F4', '% Interference', form_border)
+                    ws_int.merge_range('G4:H4', '', form_border_center)
+
+                    ws_int.merge_range('A5:C5', 'Area Observed for Standard Blank at IS RT:', form_border)
+                    ws_int.write('D5', std_blank_is, form_border_center)
+                    ws_int.merge_range('E5:F5', '% Interference', form_border)
+                    ws_int.merge_range('G5:H5', '', form_border_center)
+
+                    ws_int.merge_range('A6:C6', 'Area Observed for Standard Blank+IS at Analyte RT:', form_border)
+                    ws_int.write('D6', std_blank_plus_is, form_border_center)
+                    ws_int.merge_range('E6:F6', '% Interference', form_border)
+                    ws_int.merge_range('G6:H6', '', form_border_center)
+
+                    ws_int.merge_range('A7:C7', 'Area Observed for MPH/ESO/RCS at Analyte RT:', form_border)
+                    ws_int.write('D7', '', form_border_center)
+                    ws_int.merge_range('E7:F7', '% Interference', form_border)
+                    ws_int.merge_range('G7:H7', '', form_border_center)
+
+                    ws_int.merge_range('A8:C8', 'Area Observed for MPH/ESO/RCS at IS RT:', form_border)
+                    ws_int.write('D8', '', form_border_center)
+                    ws_int.merge_range('E8:F8', '% Interference', form_border)
+                    ws_int.merge_range('G8:H8', '', form_border_center)
+
+                    ws_int.merge_range('A9:D9', '% Interference for Standard Blank, Standard Blank+IS, MPH/ESO/RCS:', form_border)
+                    ws_int.merge_range('E9:F9', 'Accepted/Not Accepted', form_border)
+                    ws_int.merge_range('G9:H9', '', form_border_center)
+
+                    # Acceptability of Non-Zero CC
+                    ws_int.merge_range('A10:H10', 'Acceptability of Non-Zero calibration curve standards', form_header)
+                    
+                    ws_int.write('A11', 'CC ID:', form_border)
+                    ws_int.merge_range('B11:D11', meta['rows'][0].get('CCID', 'CC-01') if len(meta['rows'])>0 else '', form_border_center)
+                    ws_int.merge_range('E11:F11', "'r' value", form_border)
+                    ws_int.merge_range('G11:H11', meta.get('r_val', ''), form_border_center)
+
+                    ws_int.merge_range('A12:C12', 'No. of CC standards injected', form_border)
+                    ws_int.write('D12', len(std_names), form_border_center)
+                    ws_int.merge_range('E12:F12', 'No. of CC standard accepted', form_border)
+                    ws_int.merge_range('G12:H12', meta.get('cc_pass', ''), form_border_center)
+
+                    ws_int.merge_range('A13:C13', 'Details of Failed CC standard(s), if any', form_border)
+                    ws_int.merge_range('D13:H13', '', form_border_center)
+
+                    ws_int.merge_range('A14:B14', 'Calibration curve status:', form_border)
+                    ws_int.merge_range('C14:E14', 'Accepted/Not Accepted', form_border)
+                    ws_int.merge_range('F14:H14', '', form_border_center)
+
+                    # Acceptability of QC Samples
+                    ws_int.merge_range('A15:H15', 'Acceptability of QC Samples', form_header)
+                    
+                    ws_int.merge_range('A16:B17', 'QC ID', form_header)
+                    ws_int.merge_range('C16:D16', 'Total No. of QC Injected', form_header)
+                    ws_int.merge_range('E16:F16', 'Total No. of QC Passed', form_header)
+                    ws_int.merge_range('G16:H16', 'Acceptance status Yes/ No', form_header)
+                    
+                    ws_int.write('C17', 'Set-1', form_header)
+                    ws_int.write('D17', 'Set-2', form_header)
+                    ws_int.write('E17', 'Set-1', form_header)
+                    ws_int.write('F17', 'Set-2', form_header)
+                    ws_int.write('G17', 'Set-1', form_header)
+                    ws_int.write('H17', 'Set-2', form_header)
+
+                    qcs = ['LQC', 'MMQC', 'MQC', 'HQC']
+                    qc_passed = [meta.get('lqc_pass', ''), meta.get('mmqc_pass', ''), meta.get('mqc_pass', ''), meta.get('hqc_pass', '')]
+                    
+                    for i, (qc, passed) in enumerate(zip(qcs, qc_passed)):
+                        r = 17 + i
+                        ws_int.merge_range(r, 0, r, 1, f"{qc}:", form_border)
+                        ws_int.write(r, 2, '', form_border_center) # Set-1 Injected
+                        ws_int.write(r, 3, '', form_border_center) # Set-2 Injected
+                        ws_int.write(r, 4, passed, form_border_center) # Passed (Total currently mapped here, can split logic if needed)
+                        ws_int.write(r, 5, '', form_border_center) 
+                        ws_int.write(r, 6, '', form_border_center) 
+                        ws_int.write(r, 7, '', form_border_center) 
+                    
+                    ws_int.merge_range('A22:B22', 'Total no. of QCs', form_border)
+                    for col in range(2, 8): ws_int.write(21, col, '', form_border_center)
+
+                    # Repeat Sample Identification
+                    ws_int.merge_range('A23:H23', 'Repeat Sample Identification', form_header)
+                    ws_int.write('A24', 'S.No', form_header)
+                    ws_int.merge_range('B24:C24', 'Sample Name', form_header)
+                    ws_int.write('D24', 'Repeat code', form_header)
+                    ws_int.write('E24', 'S.No', form_header)
+                    ws_int.merge_range('F24:G24', 'Sample Name', form_header)
+                    ws_int.write('H24', 'Repeat code', form_header)
+
+                    # Fill blank rows for repeats (adjust loop size as needed)
+                    for r in range(24, 34):
+                        ws_int.write(r, 0, '', form_border_center)
+                        ws_int.merge_range(r, 1, r, 2, '', form_border_center)
+                        ws_int.write(r, 3, '', form_border_center)
+                        ws_int.write(r, 4, '', form_border_center)
+                        ws_int.merge_range(r, 5, r, 6, '', form_border_center)
+                        ws_int.write(r, 7, '', form_border_center)
             # --- APPLY BORDERS, STATS, AND FAILURE FORMATTING TO CC AND QC TABS ---
             for target_sheet in ["CC", "QC"]:
                 if target_sheet in excel_tabs:
