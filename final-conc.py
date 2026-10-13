@@ -7,19 +7,28 @@ import re
 st.set_page_config(layout="wide")
 st.title("Simple Concentration & Repeat Tracker")
 
+# Initialize session state for the file uploaders to allow clearing
+if "uploader_key" not in st.session_state:
+    st.session_state.uploader_key = 0
+
+def clear_files():
+    st.session_state.uploader_key += 1
+
 st.header("1. Upload Setup & Parameters")
 col_a, col_b = st.columns(2)
 with col_a:
-    setup_file = st.file_uploader("Upload Setup Excel File", type=["xls", "xlsx", "xlsm"])
+    setup_file = st.file_uploader("Upload Setup Excel File", type=["xls", "xlsx", "xlsm"], key=f"setup_{st.session_state.uploader_key}")
 with col_b:
     unit = st.selectbox("Select Concentration Units", ["ng/mL", "pg/mL", "µg/mL"])
 
 st.header("2. Upload TSQ Files")
 col1, col2 = st.columns(2)
 with col1:
-    uploaded_files = st.file_uploader("Upload Main TSQ Export Files", type=["csv", "xls", "xlsx"], accept_multiple_files=True)
+    uploaded_files = st.file_uploader("Upload Main TSQ Export Files", type=["csv", "xls", "xlsx"], accept_multiple_files=True, key=f"main_{st.session_state.uploader_key}")
 with col2:
-    repeat_files = st.file_uploader("Upload Repeat Files (Optional)", type=["csv", "xls", "xlsx"], accept_multiple_files=True)
+    repeat_files = st.file_uploader("Upload Repeat Files (Optional)", type=["csv", "xls", "xlsx"], accept_multiple_files=True, key=f"repeat_{st.session_state.uploader_key}")
+
+st.button("🧹 Clear All Uploaded Files", on_click=clear_files)
 
 st.header("3. ISR Selection Parameters")
 col_x, col_y = st.columns(2)
