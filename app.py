@@ -114,7 +114,25 @@ if st.button("Generate Dashboard"):
         
         for file, file_category in combined_files:
             file.seek(0)
-            safe_sheet_name = re.sub(r'[\\/*?:\[\]]', '_', file.name)[:31]
+            
+            # --- Extract cleaner sheet name based on subject numbers ---
+            # By taking the last matched sequence `matches[-1]`, it inherently skips study codes like "s-26" 
+            # and zeroes in on the true subject sequence at the end of the string like "S001-S002-S-003"
+            matches = re.findall(r'(S[-_]?\d+(?:[-_]+S[-_]?\d+)*)', file.name, re.IGNORECASE)
+            if matches:
+                base_name = matches[-1].upper()
+            elif 'REPEAT' in file.name.upper():
+                base_name = "Repeat"
+            elif 'ISR' in file.name.upper():
+                base_name = "ISR"
+            else:
+                base_name = file.name
+                
+            safe_sheet_name = re.sub(r'[\\/*?:\[\]]', '_', base_name)[:31]
+            counter = 1
+            while safe_sheet_name in batch_meta_data:
+                safe_sheet_name = f"{safe_sheet_name[:27]}_{counter}"
+                counter += 1
             
             df, error_msg = load_data(file)
             if df is None:
@@ -170,8 +188,7 @@ if st.button("Generate Dashboard"):
                 continue
             
             subj_id = "S1"
-            match = re.search(r'(S\d+(?:[-_]S\d+)*)', file.name, re.IGNORECASE)
-            if match: subj_id = match.group(1).upper()
+            if matches: subj_id = matches[-1].upper()
             elif 'REPEAT' in file.name.upper(): subj_id = "Repeat"
             elif 'ISR' in file.name.upper(): subj_id = "ISR"
                 
@@ -517,6 +534,11 @@ if st.button("Generate Dashboard"):
             excel_tabs["QC"] = qc_df[qc_columns]
 
         output = io.BytesIO()
+        
+        # --- NEW SORTING RULE ---
+        # Grabs all generated sheet names and sorts them in alphanumeric ascending order
+        sorted_batch_keys = sorted(batch_meta_data.keys(), key=natural_sort_key)
+        
         with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
             
             for sh_name in ["Summary", "Repeats", "Repeat Analysis", "ISR Analysis", "CC", "QC"]:
@@ -556,7 +578,9 @@ if st.button("Generate Dashboard"):
             qa_ws.set_column('C:D', 35, general_fmt)
             qa_row = 0
             
-            for safe_sheet_name, meta in batch_meta_data.items():
+            # QA Summary Blocks generated in ordered sequence
+            for safe_sheet_name in sorted_batch_keys:
+                meta = batch_meta_data[safe_sheet_name]
                 qa_ws.merge_range(qa_row, 0, qa_row, 6, f"QA Summary - Batch: {safe_sheet_name}", table_header_green)
                 qa_row += 1
                 
@@ -735,7 +759,9 @@ if st.button("Generate Dashboard"):
                         worksheet.set_column(1, 3, 15, general_fmt)
                         worksheet.set_column(4, 7, 15, conc_fmt)
 
-            for safe_sheet_name, meta in batch_meta_data.items():
+            # Individual Batch Sheets generated in ordered sequence
+            for safe_sheet_name in sorted_batch_keys:
+                meta = batch_meta_data[safe_sheet_name]
                 ws = workbook.add_worksheet(safe_sheet_name)
                 final_rows = meta['rows']
                 chart_data = meta['chart_data']
