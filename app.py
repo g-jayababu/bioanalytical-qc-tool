@@ -253,18 +253,18 @@ if st.button("Generate Dashboard"):
                 raw_acc_val = str(row[acc_col]).strip() if acc_col else ""
                 acc_val = pd.to_numeric(raw_acc_val, errors='coerce') if raw_acc_val != "" else np.nan
                 
-                # 1. Standard Blank + IS (Prioritize +IS over BLK)
-                if ('ZERO' in s_name_up or '+IS' in s_name_up) and 'AQSTD' not in s_name_up:
+                # 1. Mobile Phase / Reconstitution Solution (Check FIRST so 'MP-BLK' isn't stolen by BLK)
+                if any(x in s_name_up for x in ['MPH', 'MOH', 'ESO', 'RCS', 'MOBILE', 'MP', 'RECON']):
+                    if mph_a_area is None: mph_a_area = a_area if pd.notna(a_area) else 0.0
+                    if mph_is_area is None: mph_is_area = s_is_area if pd.notna(s_is_area) else 0.0
+                # 2. Standard Blank + IS (Zero)
+                elif ('ZERO' in s_name_up or '+IS' in s_name_up or 'BLANK+IS' in s_name_up) and 'AQSTD' not in s_name_up and 'BLK' not in s_name_up:
                     if zero_a_area is None: zero_a_area = a_area if pd.notna(a_area) else 0.0
                     if zero_is_area is None: zero_is_area = s_is_area if pd.notna(s_is_area) else 0.0
-                # 2. Standard Blank (Executes ONLY if +IS is not in the name)
+                # 3. Standard Blank
                 elif 'BLK' in s_name_up or 'BLANK' in s_type_up:
                     if blk_a_area is None: blk_a_area = a_area if pd.notna(a_area) else 0.0
                     if blk_is_area is None: blk_is_area = s_is_area if pd.notna(s_is_area) else 0.0
-                # 3. Mobile Phase
-                elif 'MPH' in s_name_up or 'ESO' in s_name_up or 'RCS' in s_name_up:
-                    if mph_a_area is None: mph_a_area = a_area if pd.notna(a_area) else 0.0
-                    if mph_is_area is None: mph_is_area = s_is_area if pd.notna(s_is_area) else 0.0
                 
                 failed_ccqc = False
                 if 'STANDARD' in s_type_up or 'QC' in s_type_up or 'QUALITY' in s_type_up:
@@ -617,11 +617,11 @@ if st.button("Generate Dashboard"):
                     qa_ws.merge_range(qa_row, 4, qa_row, 5, "% Interference", data_white)
                     qa_ws.write(qa_row, 6, pct, data_white_pct if isinstance(pct, (int, float)) else data_white)
 
-                write_interf_row("Area Observed for Standard Blank at Analyte RT:", blk_a, blk_a_pct); qa_row += 1
-                write_interf_row("Area Observed for Standard Blank at IS RT:", blk_is, blk_is_pct); qa_row += 1
-                write_interf_row("Area Observed for Standard Blank+IS at Analyte RT:", zero_a, zero_a_pct); qa_row += 1
-                write_interf_row("Area Observed for MPH/ESO/RCS at Analyte RT:", mph_a, mph_a_pct); qa_row += 1
-                write_interf_row("Area Observed for MPH/ESO/RCS at IS RT:", mph_is, mph_is_pct); qa_row += 1
+                write_interf_row("Area Observed for Standard Blank at Analyte RT:", blk_a if pd.notna(blk_a) else 0.0, blk_a_pct); qa_row += 1
+                write_interf_row("Area Observed for Standard Blank at IS RT:", blk_is if pd.notna(blk_is) else 0.0, blk_is_pct); qa_row += 1
+                write_interf_row("Area Observed for Standard Blank+IS at Analyte RT:", zero_a if pd.notna(zero_a) else 0.0, zero_a_pct); qa_row += 1
+                write_interf_row("Area Observed for MPH/ESO/RCS at Analyte RT:", mph_a if pd.notna(mph_a) else 0.0, mph_a_pct); qa_row += 1
+                write_interf_row("Area Observed for MPH/ESO/RCS at IS RT:", mph_is if pd.notna(mph_is) else 0.0, mph_is_pct); qa_row += 1
 
                 qa_ws.merge_range(qa_row, 0, qa_row, 3, "% Interference for Standard Blank, Standard Blank+IS, MPH/ESO/RCS:", data_white_left)
                 qa_ws.merge_range(qa_row, 4, qa_row, 6, interf_accepted, data_white)
