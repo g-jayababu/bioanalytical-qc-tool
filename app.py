@@ -59,6 +59,13 @@ def extract_sort_num(val):
     nums = re.findall(r'\d+', str(val))
     return int(nums[-1]) if nums else 0
 
+def extract_qc_id(name):
+    """Extracts only the last 2/3 digits of the QC Sample ID for clean reporting"""
+    parts = re.split(r'[-_]', str(name).strip())
+    if parts and parts[-1].strip().isdigit():
+        return parts[-1].strip()
+    return str(name).strip()
+
 def natural_sort_key(s):
     return [int(text) if text.isdigit() else text.lower() for text in re.split(r'(\d+)', str(s))]
 
@@ -115,14 +122,16 @@ if st.button("Generate Dashboard"):
         for file, file_category in combined_files:
             file.seek(0)
             
-            # --- Extract cleaner sheet name based on subject numbers ---
+            # --- Extract cleaner sheet name based on subject numbers OR explicit Repeat/ISR tags ---
             matches = re.findall(r'(S[-_]?\d+(?:[-_]+S[-_]?\d+)*)', file.name, re.IGNORECASE)
             if matches:
                 base_name = matches[-1].upper()
             elif 'REPEAT' in file.name.upper():
-                base_name = "Repeat"
+                rep_match = re.search(r'(REPEAT[-_]?\d*)', file.name, re.IGNORECASE)
+                base_name = rep_match.group(1).upper() if rep_match else "REPEAT"
             elif 'ISR' in file.name.upper():
-                base_name = "ISR"
+                isr_match = re.search(r'(ISR[-_]?\d*)', file.name, re.IGNORECASE)
+                base_name = isr_match.group(1).upper() if isr_match else "ISR"
             else:
                 base_name = file.name
                 
@@ -306,17 +315,14 @@ if st.button("Generate Dashboard"):
                     
                     is_predose = 'PRE' in s_name_up or bool(re.search(r'[-_]0(\.0+)?$', s_name_up))
                     if is_predose:
-                        # Extract subject to find Cmax
                         parts = re.split(r'[-_]', s_name_raw)
                         current_subj = parts[0].upper() if len(parts) > 0 else s_name_up
                         
-                        # Find Cmax for this subject in the current file efficiently using pandas
                         subj_mask = df[name_col].astype(str).str.upper().str.contains(current_subj, na=False, regex=False)
                         unk_mask = df[type_col].astype(str).str.upper().str.contains('UNKNOWN', na=False)
                         subj_concs = pd.to_numeric(df.loc[subj_mask & unk_mask, conc_col], errors='coerce')
                         cmax = subj_concs.max() if not subj_concs.empty else 0
                         
-                        # Evaluate multi-tier criteria
                         pd_flag = False
                         if pd.notna(lloq) and conc > lloq:
                             pd_flag = True
@@ -380,10 +386,10 @@ if st.button("Generate Dashboard"):
                         file_cc_dict[std] = conc if pd.notna(conc) else ""
                         break
                 
-                if 'LQC' in s_name_up: lqc_list.append(conc if pd.notna(conc) else ""); lqc_ids.append(s_name_raw)
-                elif 'MMQC' in s_name_up: mmqc_list.append(conc if pd.notna(conc) else ""); mmqc_ids.append(s_name_raw)
-                elif 'MQC' in s_name_up and 'MMQC' not in s_name_up: mqc_list.append(conc if pd.notna(conc) else ""); mqc_ids.append(s_name_raw)
-                elif 'HQC' in s_name_up: hqc_list.append(conc if pd.notna(conc) else ""); hqc_ids.append(s_name_raw)
+                if 'LQC' in s_name_up: lqc_list.append(conc if pd.notna(conc) else ""); lqc_ids.append(extract_qc_id(s_name_raw))
+                elif 'MMQC' in s_name_up: mmqc_list.append(conc if pd.notna(conc) else ""); mmqc_ids.append(extract_qc_id(s_name_raw))
+                elif 'MQC' in s_name_up and 'MMQC' not in s_name_up: mqc_list.append(conc if pd.notna(conc) else ""); mqc_ids.append(extract_qc_id(s_name_raw))
+                elif 'HQC' in s_name_up: hqc_list.append(conc if pd.notna(conc) else ""); hqc_ids.append(extract_qc_id(s_name_raw))
 
             file_cc_dict['Slope'] = "" if pd.isna(slope) else slope
             file_cc_dict['Intercept'] = "" if pd.isna(intercept) else intercept
@@ -414,6 +420,7 @@ if st.button("Generate Dashboard"):
             final_chart = ccqc_chart + [(np.nan, np.nan, np.nan, np.nan, np.nan), (np.nan, np.nan, np.nan, np.nan, np.nan)] + sample_chart
             
             batch_meta_data[safe_sheet_name] = {
+                'full_file_name': file.name,
                 'ccid_str': ccid_str,
                 'rows': final_rows, 'chart_data': final_chart,
                 'slope': slope, 'intercept': intercept, 'r_val': r_val,
@@ -572,14 +579,14 @@ if st.button("Generate Dashboard"):
             failed_ccqc_pct_fmt = workbook.add_format({**tnr, 'bg_color': '#FFFF00', 'bold': True, 'font_color': '#000000', 'border': 1, 'align': 'center', 'valign': 'vcenter', 'num_format': '0.00'})
             failed_ccqc_float_fmt = workbook.add_format({**tnr, 'bg_color': '#FFFF00', 'bold': True, 'font_color': '#000000', 'border': 1, 'align': 'center', 'valign': 'vcenter', 'num_format': '0.000'})
 
-            qa_ws = workbook.add_worksheet("QA Summary")
+            qa_ws = workbook.add_worksheet("Study data verification")
             qa_ws.set_column('A:B', 35, general_fmt)
             qa_ws.set_column('C:D', 35, general_fmt)
             qa_row = 0
             
             for safe_sheet_name in sorted_batch_keys:
                 meta = batch_meta_data[safe_sheet_name]
-                qa_ws.merge_range(qa_row, 0, qa_row, 6, f"QA Summary - Batch: {safe_sheet_name}", table_header_green)
+                qa_ws.merge_range(qa_row, 0, qa_row, 6, f"Study data verification - Batch: {meta.get('full_file_name', safe_sheet_name)}", table_header_green)
                 qa_row += 1
                 
                 qa_ws.write(qa_row, 0, "LLOQ area", data_white_left)
@@ -674,8 +681,8 @@ if st.button("Generate Dashboard"):
                     s1_ok = "Yes" if s1_t > 0 and (s1_p / s1_t) >= 0.5 else ("-" if s1_t == 0 else "No")
                     s2_ok = "Yes" if s2_t > 0 and (s2_p / s2_t) >= 0.5 else ("-" if s2_t == 0 else "No")
                     
-                    f_id = objs[0]['name'].split('-')[-1] if objs else ""
-                    l_id = objs[-1]['name'].split('-')[-1] if objs else ""
+                    f_id = extract_qc_id(objs[0]['name']) if objs else ""
+                    l_id = extract_qc_id(objs[-1]['name']) if objs else ""
                     return f"({f_id}-{l_id})" if f_id and l_id else "", s1_t, s2_t, s1_p, s2_p, s1_ok, s2_ok
                 
                 tot_s1_inj = tot_s2_inj = tot_s1_pass = tot_s2_pass = 0
@@ -720,42 +727,77 @@ if st.button("Generate Dashboard"):
                     
                 qa_row += 3 
 
-            for sheet_name in ["Summary", "Repeats", "Repeat Analysis", "ISR Analysis", "CC", "QC"]:
-                if sheet_name in excel_tabs:
-                    df_tab = excel_tabs[sheet_name]
-                    worksheet = writer.sheets[sheet_name]
-                    for col_num, value in enumerate(df_tab.columns): worksheet.write(0, col_num, value, header_format)
-                    worksheet.set_column('A:A', 35) 
+            for target_sheet in ["CC", "QC"]:
+                if target_sheet in excel_tabs:
+                    ws = writer.sheets[target_sheet]
+                    df_target = excel_tabs[target_sheet]
+                    num_rows = len(df_target)
+                    stat_row = num_rows + 1 
                     
-                    if sheet_name == "Summary":
-                        worksheet.set_column('B:Z', 25, general_fmt)
-                        for row_num, row_data in enumerate(df_tab.values):
-                            row_fmt = success_fmt if row_data[1] == "SUCCESS" else failed_fmt
-                            for col_num, value in enumerate(row_data): worksheet.write(row_num + 1, col_num, value, row_fmt)
-                    elif sheet_name == "Repeats":
-                        worksheet.set_column('B:B', 30, general_fmt)
-                        worksheet.set_column('C:C', 15, conc_fmt)
-                        worksheet.set_column('D:D', 25, general_fmt)
-                    elif sheet_name == "Repeat Analysis":
-                        worksheet.set_column('A:A', 10, general_fmt)
-                        worksheet.set_column('B:D', 30, general_fmt)
-                        worksheet.set_column('E:F', 25, conc_fmt)
-                        worksheet.set_column('G:G', 20, pct_fmt)
-                    elif sheet_name == "ISR Analysis":
-                        worksheet.set_column('A:A', 10, general_fmt)
-                        worksheet.set_column('B:B', 30, general_fmt)
-                        worksheet.set_column('C:D', 25, conc_fmt)
-                        worksheet.set_column('E:E', 20, pct_fmt)
-                    elif sheet_name == "CC":
-                        worksheet.set_column(1, 2, 15, general_fmt)
-                        start_c = 3
-                        end_c = 3 + len(std_names) - 1
-                        if end_c >= start_c: worksheet.set_column(start_c, end_c, 15, conc_fmt)
-                        worksheet.set_column(end_c + 1, end_c + 2, 15, general_fmt)
-                        worksheet.set_column(end_c + 3, end_c + 3, 15, r_fmt)
-                    elif sheet_name == "QC":
-                        worksheet.set_column(1, 3, 15, general_fmt)
-                        worksheet.set_column(4, 7, 15, conc_fmt)
+                    start_col = 3 if target_sheet == "CC" else 4
+                    end_col = len(std_names) + 3 if target_sheet == "CC" else 8
+                    
+                    for r in range(1, num_rows + 1):
+                        for c in range(len(df_target.columns)):
+                            val = df_target.iloc[r-1, c]
+                            col_name = df_target.columns[c]
+                            
+                            if target_sheet == "CC" and col_name in ['Slope', 'Intercept']:
+                                fmt = data_white
+                            elif target_sheet == "CC" and col_name == 'r':
+                                fmt = data_white_r if isinstance(val, (int, float)) else data_white
+                            else:
+                                fmt = data_white_float if isinstance(val, (int, float)) else data_white
+                            
+                            out_val = "" if pd.isna(val) else val
+                            
+                            if r > 3 and start_col <= c < end_col and pd.notna(val) and val != "":
+                                try:
+                                    num_val = float(val)
+                                    lower_limit = float(df_target.iloc[1, c])
+                                    upper_limit = float(df_target.iloc[2, c])
+                                    if num_val < lower_limit or num_val > upper_limit:
+                                        if target_sheet == "CC":
+                                            out_val = f"{num_val:.3f}*"
+                                            fmt = failed_ccqc_string_fmt
+                                        else:
+                                            out_val = num_val
+                                            fmt = failed_ccqc_float_fmt
+                                except (ValueError, TypeError):
+                                    pass
+                            
+                            ws.write(r, c, out_val, fmt)
+                    
+                    ws.merge_range(0, 0, 3, 0, df_target.columns[0], header_format)
+                    ws.merge_range(0, 1, 3, 1, df_target.columns[1], header_format)
+                    
+                    if target_sheet == "CC":
+                        ws.merge_range(0, 2, 3, 2, df_target.columns[2], header_format)
+                        end_c = len(df_target.columns)
+                        ws.merge_range(0, end_c - 3, 3, end_c - 3, df_target.columns[end_c - 3], header_format)
+                        ws.merge_range(0, end_c - 2, 3, end_c - 2, df_target.columns[end_c - 2], header_format)
+                        ws.merge_range(0, end_c - 1, 3, end_c - 1, df_target.columns[end_c - 1], header_format)
+                    elif target_sheet == "QC":
+                        for r in range(4, num_rows + 1, 4):
+                            if r + 3 <= num_rows:
+                                date_val, subj_val = df_target.iloc[r-1, 0], df_target.iloc[r-1, 1]
+                                ws.merge_range(r, 0, r+3, 0, "" if pd.isna(date_val) else str(date_val), merge_fmt)
+                                ws.merge_range(r, 1, r+3, 1, "" if pd.isna(subj_val) else str(subj_val), merge_fmt)
+                    
+                    label_col = 2 if target_sheet == "CC" else 1
+                    ws.write(stat_row, label_col, "Mean", bold_label)
+                    ws.write(stat_row + 1, label_col, "SD", bold_label)
+                    ws.write(stat_row + 2, label_col, "%CV", bold_label)
+                    ws.write(stat_row + 3, label_col, "%Accuracy", bold_label)
+                    
+                    for col_num in range(start_col, end_col):
+                        col_letter = xl_col_to_name(col_num)
+                        data_range = f"{col_letter}5:{col_letter}{num_rows + 1}"
+                        ws.write_formula(stat_row, col_num, f"=IFERROR(AVERAGE({data_range}), \"\")", float_fmt)
+                        ws.write_formula(stat_row + 1, col_num, f"=IFERROR(STDEV({data_range}), \"\")", stdev_fmt)
+                        ws.write_formula(stat_row + 2, col_num, f"=IFERROR(({col_letter}{stat_row + 2}/{col_letter}{stat_row + 1})*100, \"\")", pct_fmt)
+                        ws.write_formula(stat_row + 3, col_num, f"=IFERROR(({col_letter}{stat_row + 1}/{col_letter}2)*100, \"\")", pct_fmt)
+                        ws.conditional_format(data_range, {'type': 'formula', 'criteria': f"=AND(ISNUMBER({col_letter}5), OR({col_letter}5<{col_letter}$3, {col_letter}5>{col_letter}$4))", 'format': yellow_flag})
 
             for safe_sheet_name in sorted_batch_keys:
                 meta = batch_meta_data[safe_sheet_name]
@@ -915,78 +957,6 @@ if st.button("Generate Dashboard"):
                     for i, smp in enumerate(predose_u):
                         ws.write(or_start + 1 + i, 10, smp['name'], data_white)
                         ws.write(or_start + 1 + i, 11, smp['conc'], data_yellow_float)
-
-            for target_sheet in ["CC", "QC"]:
-                if target_sheet in excel_tabs:
-                    ws = writer.sheets[target_sheet]
-                    df_target = excel_tabs[target_sheet]
-                    num_rows = len(df_target)
-                    stat_row = num_rows + 1 
-                    
-                    start_col = 3 if target_sheet == "CC" else 4
-                    end_col = len(std_names) + 3 if target_sheet == "CC" else 8
-                    
-                    for r in range(1, num_rows + 1):
-                        for c in range(len(df_target.columns)):
-                            val = df_target.iloc[r-1, c]
-                            col_name = df_target.columns[c]
-                            
-                            if target_sheet == "CC" and col_name in ['Slope', 'Intercept']:
-                                fmt = data_white
-                            elif target_sheet == "CC" and col_name == 'r':
-                                fmt = data_white_r if isinstance(val, (int, float)) else data_white
-                            else:
-                                fmt = data_white_float if isinstance(val, (int, float)) else data_white
-                            
-                            out_val = "" if pd.isna(val) else val
-                            
-                            if r > 3 and start_col <= c < end_col and pd.notna(val) and val != "":
-                                try:
-                                    num_val = float(val)
-                                    lower_limit = float(df_target.iloc[1, c])
-                                    upper_limit = float(df_target.iloc[2, c])
-                                    if num_val < lower_limit or num_val > upper_limit:
-                                        if target_sheet == "CC":
-                                            out_val = f"{num_val:.3f}*"
-                                            fmt = failed_ccqc_string_fmt
-                                        else:
-                                            out_val = num_val
-                                            fmt = failed_ccqc_float_fmt
-                                except (ValueError, TypeError):
-                                    pass
-                            
-                            ws.write(r, c, out_val, fmt)
-                    
-                    ws.merge_range(0, 0, 3, 0, df_target.columns[0], header_format)
-                    ws.merge_range(0, 1, 3, 1, df_target.columns[1], header_format)
-                    
-                    if target_sheet == "CC":
-                        ws.merge_range(0, 2, 3, 2, df_target.columns[2], header_format)
-                        end_c = len(df_target.columns)
-                        ws.merge_range(0, end_c - 3, 3, end_c - 3, df_target.columns[end_c - 3], header_format)
-                        ws.merge_range(0, end_c - 2, 3, end_c - 2, df_target.columns[end_c - 2], header_format)
-                        ws.merge_range(0, end_c - 1, 3, end_c - 1, df_target.columns[end_c - 1], header_format)
-                    elif target_sheet == "QC":
-                        for r in range(4, num_rows + 1, 4):
-                            if r + 3 <= num_rows:
-                                date_val, subj_val = df_target.iloc[r-1, 0], df_target.iloc[r-1, 1]
-                                ws.merge_range(r, 0, r+3, 0, "" if pd.isna(date_val) else str(date_val), merge_fmt)
-                                ws.merge_range(r, 1, r+3, 1, "" if pd.isna(subj_val) else str(subj_val), merge_fmt)
-                    
-                    label_col = 2 if target_sheet == "CC" else 1
-                    ws.write(stat_row, label_col, "Mean", bold_label)
-                    ws.write(stat_row + 1, label_col, "SD", bold_label)
-                    ws.write(stat_row + 2, label_col, "%CV", bold_label)
-                    ws.write(stat_row + 3, label_col, "%Accuracy", bold_label)
-                    
-                    for col_num in range(start_col, end_col):
-                        col_letter = xl_col_to_name(col_num)
-                        data_range = f"{col_letter}5:{col_letter}{num_rows + 1}"
-                        ws.write_formula(stat_row, col_num, f"=IFERROR(AVERAGE({data_range}), \"\")", float_fmt)
-                        ws.write_formula(stat_row + 1, col_num, f"=IFERROR(STDEV({data_range}), \"\")", stdev_fmt)
-                        ws.write_formula(stat_row + 2, col_num, f"=IFERROR(({col_letter}{stat_row + 2}/{col_letter}{stat_row + 1})*100, \"\")", pct_fmt)
-                        ws.write_formula(stat_row + 3, col_num, f"=IFERROR(({col_letter}{stat_row + 1}/{col_letter}2)*100, \"\")", pct_fmt)
-                        ws.conditional_format(data_range, {'type': 'formula', 'criteria': f"=AND(ISNUMBER({col_letter}5), OR({col_letter}5<{col_letter}$3, {col_letter}5>{col_letter}$4))", 'format': yellow_flag})
 
             mapped_samples = {}
             if num_subj > 0 and periods_list and timepoints_list:
@@ -1171,7 +1141,7 @@ if st.button("Generate Dashboard"):
                             ws_rep.write(row_idx, 6, "", data_white)
                         row_idx += 1
 
-        st.success("Dashboard successfully generated with QA Summary Tab and Automated Repeats Tracker!")
+        st.success("Dashboard successfully generated with Study data verification Tab and Automated Repeats Tracker!")
         st.download_button(
             label="Download Master Excel Dashboard",
             data=output.getvalue(),
