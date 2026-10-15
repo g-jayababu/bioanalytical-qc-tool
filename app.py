@@ -258,7 +258,7 @@ if st.button("Generate Dashboard"):
                     if mph_a_area is None: mph_a_area = a_area if pd.notna(a_area) else 0.0
                     if mph_is_area is None: mph_is_area = s_is_area if pd.notna(s_is_area) else 0.0
                 # 2. Standard Blank + IS (Zero)
-                elif ('ZERO' in s_name_up or '+IS' in s_name_up or 'BLANK+IS' in s_name_up) and 'AQSTD' not in s_name_up and 'BLK' not in s_name_up:
+                elif ('ZERO' in s_name_up or '+IS' in s_name_up or 'BLANK+IS' in s_name_up) and 'AQSTD' not in s_name_up:
                     if zero_a_area is None: zero_a_area = a_area if pd.notna(a_area) else 0.0
                     if zero_is_area is None: zero_is_area = s_is_area if pd.notna(s_is_area) else 0.0
                 # 3. Standard Blank
