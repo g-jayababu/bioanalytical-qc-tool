@@ -116,8 +116,6 @@ if st.button("Generate Dashboard"):
             file.seek(0)
             
             # --- Extract cleaner sheet name based on subject numbers ---
-            # By taking the last matched sequence `matches[-1]`, it inherently skips study codes like "s-26" 
-            # and zeroes in on the true subject sequence at the end of the string like "S001-S002-S-003"
             matches = re.findall(r'(S[-_]?\d+(?:[-_]+S[-_]?\d+)*)', file.name, re.IGNORECASE)
             if matches:
                 base_name = matches[-1].upper()
@@ -255,15 +253,18 @@ if st.button("Generate Dashboard"):
                 raw_acc_val = str(row[acc_col]).strip() if acc_col else ""
                 acc_val = pd.to_numeric(raw_acc_val, errors='coerce') if raw_acc_val != "" else np.nan
                 
-                if 'BLK' in s_name_up or ('BLANK' in s_type_up and '+IS' not in s_name_up):
-                    if blk_a_area is None: blk_a_area = a_area
-                    if blk_is_area is None: blk_is_area = s_is_area
-                if ('ZERO' in s_name_up or '+IS' in s_name_up or 'BLANK+IS' in s_name_up) and 'AQSTD' not in s_name_up and 'BLK' not in s_name_up:
-                    if zero_a_area is None: zero_a_area = a_area
-                    if zero_is_area is None: zero_is_area = s_is_area
-                if 'MPH' in s_name_up or 'ESO' in s_name_up or 'RCS' in s_name_up:
-                    if mph_a_area is None: mph_a_area = a_area
-                    if mph_is_area is None: mph_is_area = s_is_area
+                # 1. Standard Blank + IS (Prioritize +IS over BLK)
+                if ('ZERO' in s_name_up or '+IS' in s_name_up) and 'AQSTD' not in s_name_up:
+                    if zero_a_area is None: zero_a_area = a_area if pd.notna(a_area) else 0.0
+                    if zero_is_area is None: zero_is_area = s_is_area if pd.notna(s_is_area) else 0.0
+                # 2. Standard Blank (Executes ONLY if +IS is not in the name)
+                elif 'BLK' in s_name_up or 'BLANK' in s_type_up:
+                    if blk_a_area is None: blk_a_area = a_area if pd.notna(a_area) else 0.0
+                    if blk_is_area is None: blk_is_area = s_is_area if pd.notna(s_is_area) else 0.0
+                # 3. Mobile Phase
+                elif 'MPH' in s_name_up or 'ESO' in s_name_up or 'RCS' in s_name_up:
+                    if mph_a_area is None: mph_a_area = a_area if pd.notna(a_area) else 0.0
+                    if mph_is_area is None: mph_is_area = s_is_area if pd.notna(s_is_area) else 0.0
                 
                 failed_ccqc = False
                 if 'STANDARD' in s_type_up or 'QC' in s_type_up or 'QUALITY' in s_type_up:
@@ -535,8 +536,6 @@ if st.button("Generate Dashboard"):
 
         output = io.BytesIO()
         
-        # --- NEW SORTING RULE ---
-        # Grabs all generated sheet names and sorts them in alphanumeric ascending order
         sorted_batch_keys = sorted(batch_meta_data.keys(), key=natural_sort_key)
         
         with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
@@ -578,7 +577,6 @@ if st.button("Generate Dashboard"):
             qa_ws.set_column('C:D', 35, general_fmt)
             qa_row = 0
             
-            # QA Summary Blocks generated in ordered sequence
             for safe_sheet_name in sorted_batch_keys:
                 meta = batch_meta_data[safe_sheet_name]
                 qa_ws.merge_range(qa_row, 0, qa_row, 6, f"QA Summary - Batch: {safe_sheet_name}", table_header_green)
@@ -759,7 +757,6 @@ if st.button("Generate Dashboard"):
                         worksheet.set_column(1, 3, 15, general_fmt)
                         worksheet.set_column(4, 7, 15, conc_fmt)
 
-            # Individual Batch Sheets generated in ordered sequence
             for safe_sheet_name in sorted_batch_keys:
                 meta = batch_meta_data[safe_sheet_name]
                 ws = workbook.add_worksheet(safe_sheet_name)
