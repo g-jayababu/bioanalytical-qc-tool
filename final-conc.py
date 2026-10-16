@@ -214,7 +214,6 @@ if st.button("Generate Final Concentration Tracker"):
             tp_float = float(tp_nums[0]) if tp_nums else -1.0
             if "PRE" in tp_str.upper(): tp_float = -1.0
 
-            # Route samples into exact matches or the typological recovery pool
             if expected_tps and tp_float not in expected_tps:
                 if (subj_int, period_clean) not in unmatched_initial:
                     unmatched_initial[(subj_int, period_clean)] = []
@@ -260,13 +259,28 @@ if st.button("Generate Final Concentration Tracker"):
             pct_fmt = workbook.add_format({**tnr, 'num_format': '0.00', 'align': 'center', 'valign': 'vcenter'})
 
             def get_display_val(conc_val, raw_str, current_lloq):
+                """Formats values for Final Concentration sheet (No Peak / < 0 / < LLOQ -> 0.0)"""
                 raw_clean = str(raw_str).strip()
-                if raw_clean.upper() == "M": return "M", True
-                if raw_clean in ["< 0", "<0"]: return 0.0, False
+                raw_upper = raw_clean.upper()
+                if raw_upper == "M": return "M", True
+                if raw_upper in ["NO PEAK", "NOPEAK", "< 0", "<0"]: return 0.0, False
                 if pd.notna(conc_val) and isinstance(conc_val, (int, float)):
                     if pd.notna(current_lloq) and conc_val < current_lloq: return 0.0, False
                     return conc_val, False
-                if raw_clean.upper() in ["NAN", "NONE", ""]: return "", True
+                if raw_upper in ["NAN", "NONE", ""]: return "", True
+                return raw_clean, True
+
+            def get_period_display_val(conc_val, raw_str, current_lloq):
+                """Formats values for Period Concentration matrix (< LLOQ / 0 / No Peak -> 'BLQ')"""
+                raw_clean = str(raw_str).strip()
+                raw_upper = raw_clean.upper()
+                if raw_upper in ["M", "MISSING"]: return "M", True
+                if raw_upper in ["NO PEAK", "NOPEAK", "< 0", "<0", "BLQ"]: return "BLQ", True
+                if pd.notna(conc_val) and isinstance(conc_val, (int, float)):
+                    if pd.notna(current_lloq) and conc_val < current_lloq: return "BLQ", True
+                    if conc_val <= 0: return "BLQ", True
+                    return conc_val, False
+                if raw_upper in ["NAN", "NONE", ""]: return "M", True
                 return raw_clean, True
 
             # -----------------------------------------------------------------
@@ -379,7 +393,6 @@ if st.button("Generate Final Concentration Tracker"):
                     for period_val in periods_list:
                         period_clean = period_val.strip().upper()
                         
-                        # Match unresolved blanks with isolated typological errors for this subj/period
                         missing_tps_for_sp = []
                         for tp_val in timepoints_list:
                             tp_nums = re.findall(r'\d+\.\d+|\d+', str(tp_val))
@@ -461,7 +474,6 @@ if st.button("Generate Final Concentration Tracker"):
                             })
                             row_idx += 1
             else:
-                # Fallback for unconfigured setup
                 sorted_samples = sorted(initial_samples.items(), key=lambda x: natural_sort_key(x[1][2]))
                 for base_up, (initial_conc, init_raw_str, init_s_name) in sorted_samples:
                     parts = re.split(r'[-_]', init_s_name)
@@ -522,7 +534,83 @@ if st.button("Generate Final Concentration Tracker"):
                     row_idx += 1
 
             # -----------------------------------------------------------------
-            # 3. ISR SELECTION SHEET
+            # 3. PERIOD CONCENTRATION SHEET (Matrix view by Period)
+            # -----------------------------------------------------------------
+            ws_pconc = workbook.add_worksheet("Period Concentration")
+            ws_pconc.set_column('A:A', 12, general_fmt)
+            ws_pconc.set_column('B:B', 12, general_fmt)
+            
+            formatted_tp_headers = []
+            for tp_val in timepoints_list:
+                t_nums = re.findall(r'\d+\.\d+|\d+', str(tp_val))
+                if "PRE" in str(tp_val).upper():
+                    formatted_tp_headers.append("00.00")
+                elif t_nums:
+                    formatted_tp_headers.append(f"{float(t_nums[0]):05.2f}")
+                else:
+                    formatted_tp_headers.append(str(tp_val))
+
+            num_tps = len(formatted_tp_headers)
+            for c_idx in range(num_tps):
+                ws_pconc.set_column(2 + c_idx, 2 + c_idx, 10, general_fmt)
+
+            pconc_curr_row = 0
+            if num_subj > 0 and periods_list and timepoints_list:
+                for period_val in periods_list:
+                    p_clean = period_val.strip().upper()
+                    
+                    if num_tps > 0:
+                        ws_pconc.merge_range(pconc_curr_row, 2, pconc_curr_row, 1 + num_tps, "Time Points (hrs)", table_header_green)
+                    
+                    ws_pconc.write(pconc_curr_row + 1, 0, "Period", table_header_green)
+                    ws_pconc.write(pconc_curr_row + 1, 1, "Subject", table_header_green)
+                    for c_idx, tp_head in enumerate(formatted_tp_headers):
+                        ws_pconc.write(pconc_curr_row + 1, 2 + c_idx, tp_head, table_header_green)
+                        
+                    start_data_row = pconc_curr_row + 2
+                    end_data_row = start_data_row + num_subj - 1
+
+                    if end_data_row >= start_data_row:
+                        if start_data_row == end_data_row:
+                            ws_pconc.write(start_data_row, 0, p_clean, data_white)
+                        else:
+                            ws_pconc.merge_range(start_data_row, 0, end_data_row, 0, p_clean, data_white)
+
+                    for s_offset, s_idx in enumerate(range(1, num_subj + 1)):
+                        r_row = start_data_row + s_offset
+                        s_formatted = f"S{s_idx:03d}"
+                        ws_pconc.write(r_row, 1, s_formatted, data_white)
+                        
+                        for c_idx, tp_val in enumerate(timepoints_list):
+                            t_nums = re.findall(r'\d+\.\d+|\d+', str(tp_val))
+                            tp_flt = float(t_nums[0]) if t_nums else -1.0
+                            if "PRE" in str(tp_val).upper(): tp_flt = -1.0
+                            
+                            lookup_key = (s_idx, p_clean, tp_flt)
+                            if lookup_key in mapped_initial:
+                                init_c, init_r, init_sn = mapped_initial[lookup_key]
+                                base_u = get_base_name(init_sn).upper()
+                            else:
+                                init_c, init_r, init_sn = np.nan, "M", "Missing"
+                                base_u = None
+
+                            if base_u and base_u in repeat_samples:
+                                f_c, f_r, f_sn = repeat_samples[base_u]
+                            elif lookup_key in mapped_repeat:
+                                f_c, f_r, f_sn = mapped_repeat[lookup_key]
+                            else:
+                                f_c, f_r, f_sn = init_c, init_r, init_sn
+
+                            val, is_str = get_period_display_val(f_c, f_r, lloq)
+                            if is_str:
+                                ws_pconc.write(r_row, 2 + c_idx, val, data_white)
+                            else:
+                                ws_pconc.write(r_row, 2 + c_idx, val, data_white_float)
+                                
+                    pconc_curr_row = end_data_row + 3
+
+            # -----------------------------------------------------------------
+            # 4. ISR SELECTION SHEET
             # -----------------------------------------------------------------
             isr_selection_rows = []
             df_master = pd.DataFrame(master_data_list)
@@ -616,7 +704,7 @@ if st.button("Generate Final Concentration Tracker"):
                 ws_sel.write(1, 6, "-", data_white)
                 
             # -----------------------------------------------------------------
-            # 4. TIMEPOINT MISMATCHES SHEET
+            # 5. TIMEPOINT MISMATCHES SHEET
             # -----------------------------------------------------------------
             ws_mis = workbook.add_worksheet("Timepoint Mismatches")
             ws_mis.set_column('A:A', 35, general_fmt)
