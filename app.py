@@ -398,6 +398,7 @@ if st.button("Generate Dashboard"):
                             file_sample_dupes.append(s_name_raw)
                         else:
                             seen_samples.add(s_name_up)
+                            # Direct storage of Exact string. Base mapping matches them below.
                             if file_category == "Main":
                                 global_samples[s_name_raw] = (conc, safe_sheet_name)
                             elif file_category == "Repeat":
@@ -625,7 +626,7 @@ if st.button("Generate Dashboard"):
             table_header_green = workbook.add_format({**tnr, 'bold': True, 'bg_color': '#C6E0B4', 'border': 1, 'align': 'center', 'valign': 'vcenter'})
             table_header_gray = workbook.add_format({**tnr, 'bold': True, 'bg_color': '#D9D9D9', 'border': 1, 'align': 'center', 'valign': 'vcenter'})
             
-            # Formats for highlighted failed CC and QC rows
+            # Formats for highlighted anomaly rows and failed CC/QC rows
             failed_ccqc_string_fmt = workbook.add_format({**tnr, 'bg_color': '#FFFF00', 'font_color': '#000000', 'border': 1, 'align': 'center', 'valign': 'vcenter'})
             failed_ccqc_pct_fmt = workbook.add_format({**tnr, 'bg_color': '#FFFF00', 'font_color': '#000000', 'border': 1, 'align': 'center', 'valign': 'vcenter', 'num_format': '0.00'})
             failed_ccqc_float_fmt = workbook.add_format({**tnr, 'bg_color': '#FFFF00', 'font_color': '#000000', 'border': 1, 'align': 'center', 'valign': 'vcenter', 'num_format': '0.000'})
@@ -679,6 +680,12 @@ if st.button("Generate Dashboard"):
                 chart_data = meta['chart_data']
                 max_row = len(final_rows)
                 
+                anomaly_names = set(
+                    [s['name'] for s in meta.get('out_of_range', []) if s.get('is_unknown', True)] + 
+                    [s['name'] for s in meta.get('above_uloq', [])] + 
+                    [s['name'] for s in meta.get('predose_repeats', [])]
+                )
+                
                 ws.set_column('A:AD', 15, green_sheet_bg)
                 ws.set_column('A:A', 35, green_sheet_bg)
                 ws.set_column('G:G', 20, green_sheet_bg)
@@ -703,9 +710,12 @@ if st.button("Generate Dashboard"):
                         ws.write(r_idx, 4, row_dict.get("% Accuracy", "% Acc"), table_header_green)
                     else:
                         is_failed = row_dict.get("failed_ccqc", False)
-                        fmt_str = failed_ccqc_string_fmt if is_failed else data_white
-                        fmt_flt = failed_ccqc_float_fmt if is_failed else data_white_float
-                        fmt_pct = failed_ccqc_pct_fmt if is_failed else data_white_pct
+                        is_anomaly = row_dict["Sample Name"] in anomaly_names
+                        highlight_row = is_failed or is_anomaly
+                        
+                        fmt_str = failed_ccqc_string_fmt if highlight_row else data_white
+                        fmt_flt = failed_ccqc_float_fmt if highlight_row else data_white_float
+                        fmt_pct = failed_ccqc_pct_fmt if highlight_row else data_white_pct
                         
                         ws.write(r_idx, 0, row_dict["Sample Name"], fmt_str)
                         
@@ -722,6 +732,7 @@ if st.button("Generate Dashboard"):
                         elif row_dict["Raw.IS"] != "" and row_dict["Raw.IS"].upper() != 'NAN':
                             is_display = row_dict["Raw.IS"]
                             
+                        # Apply asterisk solely if it's a CC/QC that failed acceptance
                         if is_failed and is_display != "":
                             ws.write(r_idx, 2, f"{is_display}*", fmt_str)
                         else:
@@ -742,7 +753,7 @@ if st.button("Generate Dashboard"):
                             ws.write(r_idx, 3, c_display, fmt_str)
                             
                         acc = row_dict.get("% Accuracy", "")
-                        if is_failed:
+                        if highlight_row:
                             if pd.isna(acc) or acc == "": ws.write(r_idx, 4, "", fmt_str)
                             else: ws.write(r_idx, 4, acc, fmt_pct)
                         else:
@@ -1127,7 +1138,7 @@ if st.button("Generate Dashboard"):
             data_white_sdv = workbook_sdv.add_format({**tnr, 'bg_color': '#FFFFFF', 'border': 1, 'align': 'center', 'valign': 'vcenter'})
             general_fmt_sdv = workbook_sdv.add_format({**tnr, 'align': 'center', 'valign': 'vcenter'})
             
-            # Formats for highlighted failed CC and QC rows (SDV specific)
+            # Formats for highlighted anomaly rows and failed CC/QC rows (SDV specific)
             failed_ccqc_string_fmt_sdv = workbook_sdv.add_format({**tnr, 'bg_color': '#FFFF00', 'font_color': '#000000', 'border': 1, 'align': 'center', 'valign': 'vcenter'})
             failed_ccqc_pct_fmt_sdv = workbook_sdv.add_format({**tnr, 'bg_color': '#FFFF00', 'font_color': '#000000', 'border': 1, 'align': 'center', 'valign': 'vcenter', 'num_format': '0.00'})
             failed_ccqc_float_fmt_sdv = workbook_sdv.add_format({**tnr, 'bg_color': '#FFFF00', 'font_color': '#000000', 'border': 1, 'align': 'center', 'valign': 'vcenter', 'num_format': '0.000'})
@@ -1313,6 +1324,81 @@ if st.button("Generate Dashboard"):
                     qa_ws.write(qa_row, 7, conc_val, fmt)
                     
                     rep_count += 1; qa_row += 1
+
+                anomaly_names = set(
+                    [s['name'] for s in meta.get('out_of_range', []) if s.get('is_unknown', True)] + 
+                    [s['name'] for s in meta.get('above_uloq', [])] + 
+                    [s['name'] for s in meta.get('predose_repeats', [])]
+                )
+                
+                # We reuse max_row for placement context but iterate from index 0 inside final_rows for the table
+                row_offset_for_data = qa_row + 2
+                
+                for r_idx, row_dict in enumerate(final_rows):
+                    if row_dict["Sample Name"] == "CC and QC":
+                        qa_ws.merge_range(r_idx + row_offset_for_data, 0, r_idx + row_offset_for_data, 4, row_dict["Sample Name"], table_header_green_sdv)
+                    elif row_dict["Sample Name"] == "Average IS area of CC and QC":
+                        qa_ws.merge_range(r_idx + row_offset_for_data, 0, r_idx + row_offset_for_data, 1, row_dict["Sample Name"], table_header_gray)
+                        qa_ws.write(r_idx + row_offset_for_data, 2, row_dict["IS area"], data_white_sdv)
+                        qa_ws.write(r_idx + row_offset_for_data, 3, "", data_white_sdv)
+                        qa_ws.write(r_idx + row_offset_for_data, 4, "", data_white_sdv)
+                    elif row_dict["Sample Name"] == "Sample Name":
+                        qa_ws.write(r_idx + row_offset_for_data, 0, "Sample Name", table_header_green_sdv)
+                        qa_ws.write(r_idx + row_offset_for_data, 1, "Area", table_header_green_sdv)
+                        qa_ws.write(r_idx + row_offset_for_data, 2, "IS area", table_header_green_sdv)
+                        qa_ws.write(r_idx + row_offset_for_data, 3, "Calc.Conc.", table_header_green_sdv)
+                        qa_ws.write(r_idx + row_offset_for_data, 4, row_dict.get("% Accuracy", "% Acc"), table_header_green_sdv)
+                    else:
+                        is_failed = row_dict.get("failed_ccqc", False)
+                        is_anomaly = row_dict["Sample Name"] in anomaly_names
+                        highlight_row = is_failed or is_anomaly
+                        
+                        fmt_str = failed_ccqc_string_fmt_sdv if highlight_row else data_white_sdv
+                        fmt_flt = failed_ccqc_float_fmt_sdv if highlight_row else data_white_float_sdv
+                        fmt_pct = failed_ccqc_pct_fmt_sdv if highlight_row else data_white_pct_sdv
+                        
+                        qa_ws.write(r_idx + row_offset_for_data, 0, row_dict["Sample Name"], fmt_str)
+                        
+                        a_display = ""
+                        if pd.notna(row_dict["Area"]):
+                            a_display = int(row_dict["Area"]) if isinstance(row_dict["Area"], float) and row_dict["Area"].is_integer() else row_dict["Area"]
+                        elif row_dict["Raw.Area"] != "" and row_dict["Raw.Area"].upper() != 'NAN':
+                            a_display = row_dict["Raw.Area"]
+                        qa_ws.write(r_idx + row_offset_for_data, 1, a_display, fmt_str if isinstance(a_display, str) else fmt_flt)
+                        
+                        is_display = ""
+                        if pd.notna(row_dict["IS area"]):
+                            is_display = int(row_dict["IS area"]) if isinstance(row_dict["IS area"], float) and row_dict["IS area"].is_integer() else row_dict["IS area"]
+                        elif row_dict["Raw.IS"] != "" and row_dict["Raw.IS"].upper() != 'NAN':
+                            is_display = row_dict["Raw.IS"]
+                            
+                        # Apply asterisk solely if it's a CC/QC that failed acceptance
+                        if is_failed and is_display != "":
+                            qa_ws.write(r_idx + row_offset_for_data, 2, f"{is_display}*", fmt_str)
+                        else:
+                            qa_ws.write(r_idx + row_offset_for_data, 2, is_display, fmt_str)
+                            
+                        c_display = ""
+                        if pd.notna(row_dict["Calc.Conc."]):
+                            c_display = row_dict["Calc.Conc."]
+                        elif row_dict["Raw.Conc."] != "" and row_dict["Raw.Conc."].upper() != 'NAN':
+                            c_display = row_dict["Raw.Conc."]
+                            
+                        if pd.notna(row_dict["Calc.Conc."]) and isinstance(c_display, (int, float)):
+                            if c_display > uloq:
+                                qa_ws.write(r_idx + row_offset_for_data, 3, c_display, data_yellow_float_sdv)
+                            else:
+                                qa_ws.write(r_idx + row_offset_for_data, 3, c_display, fmt_flt)
+                        else:
+                            qa_ws.write(r_idx + row_offset_for_data, 3, c_display, fmt_str)
+                            
+                        acc = row_dict.get("% Accuracy", "")
+                        if highlight_row:
+                            if pd.isna(acc) or acc == "": qa_ws.write(r_idx + row_offset_for_data, 4, "", fmt_str)
+                            else: qa_ws.write(r_idx + row_offset_for_data, 4, acc, fmt_pct)
+                        else:
+                            if pd.isna(acc) or acc == "": qa_ws.write(r_idx + row_offset_for_data, 4, "", fmt_str)
+                            else: qa_ws.write(r_idx + row_offset_for_data, 4, acc, fmt_pct)
 
         st.success("Successfully Processed! Ready to Download.")
         
