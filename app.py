@@ -481,6 +481,9 @@ if st.button("Generate Dashboard"):
                     row_up_qc[qc] = val * (1 + limit)
             qc_df = pd.concat([pd.DataFrame([row_nom_qc, row_low_qc, row_up_qc]), qc_df_data], ignore_index=True)
             excel_tabs["QC"] = qc_df[qc_columns]
+            
+        # Define sorted_batch_keys once here to use for both exports
+        sorted_batch_keys = sorted(batch_meta_data.keys(), key=natural_sort_key)
 
         # --- 4. EXPORT WRITER ---
         output = io.BytesIO()
@@ -564,7 +567,8 @@ if st.button("Generate Dashboard"):
                         worksheet.set_column(1, 3, 15, general_fmt)
                         worksheet.set_column(4, 7, 15, conc_fmt)
 
-            for safe_sheet_name, meta in batch_meta_data.items():
+            for safe_sheet_name in sorted_batch_keys:
+                meta = batch_meta_data[safe_sheet_name]
                 ws = workbook.add_worksheet(safe_sheet_name)
                 final_rows = meta['rows']
                 chart_data = meta['chart_data']
