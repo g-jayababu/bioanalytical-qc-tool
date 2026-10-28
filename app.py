@@ -304,7 +304,7 @@ if st.button("Generate Dashboard"):
                     else:
                         failed_ccqc = True
                 
-                if ('STD-A' in s_name_up or '-1' in s_name_up) and std_a_area is None: std_a_area = a_area
+                if is_cc_qc and ('STD-A' in s_name_up or '-1' in s_name_up) and std_a_area is None: std_a_area = a_area
                 if ('ZERO' in s_name_up or 'AQSTD' in s_name_up or '+IS' in s_name_up) and std_zero_is_area is None: std_zero_is_area = s_is_area
                 if 'BLANK' in s_type_up or 'BLK' in s_name_up or 'MOBILE' in s_name_up: carryover_samples.append({'name': s_name_raw, 'a_area': a_area, 'is_area': s_is_area})
                 
