@@ -850,7 +850,7 @@ if st.button("Generate Dashboard"):
                     ws.write(or_start, 10, "Dose Repeats", table_header_green)
                     ws.write(or_start, 11, "Concentration", table_header_green)
                     
-                   out_is = meta.get('out_of_range', [])
+                    out_is = meta.get('out_of_range', [])
                     for i, smp in enumerate(out_is):
                         ws.write(or_start + 1 + i, 6, smp['name'], data_white)
                         
