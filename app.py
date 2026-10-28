@@ -75,7 +75,7 @@ def get_base_name(name):
     if not isinstance(name, str): return str(name)
     return re.sub(r'[-_](ISR\d*|R\d*|REPEAT\d*)$', '', name, flags=re.IGNORECASE).strip()
 
-if st.button("Generate Dashboard"):
+if st.button("Process Data & Generate Reports"):
     if setup_file and uploaded_files:
         st.success("Files received! Processing data...")
         try:
@@ -124,7 +124,25 @@ if st.button("Generate Dashboard"):
         # --- 1. PARSE ALL EXPORT FILES (Main, Repeats & ISR) ---
         for file, file_category in combined_files:
             file.seek(0)
-            safe_sheet_name = re.sub(r'[\\/*?:\[\]]', '_', file.name)[:31]
+            
+            # --- Extract cleaner sheet name based on subject numbers OR explicit Repeat/ISR tags ---
+            matches = re.findall(r'(S[-_]?\d+(?:[-_]+S[-_]?\d+)*)', file.name, re.IGNORECASE)
+            if matches:
+                base_name = matches[-1].upper()
+            elif 'REPEAT' in file.name.upper():
+                rep_match = re.search(r'(REPEAT[-_]?\d*)', file.name, re.IGNORECASE)
+                base_name = rep_match.group(1).upper() if rep_match else "REPEAT"
+            elif 'ISR' in file.name.upper():
+                isr_match = re.search(r'(ISR[-_]?\d*)', file.name, re.IGNORECASE)
+                base_name = isr_match.group(1).upper() if isr_match else "ISR"
+            else:
+                base_name = file.name
+                
+            safe_sheet_name = re.sub(r'[\\/*?:\[\]]', '_', base_name)[:31]
+            counter = 1
+            while safe_sheet_name in batch_meta_data:
+                safe_sheet_name = f"{safe_sheet_name[:27]}_{counter}"
+                counter += 1
             
             df, error_msg = load_data(file)
             if df is None:
@@ -166,8 +184,8 @@ if st.button("Generate Dashboard"):
             acc_col = next((c for c in df.columns if 'accur' in c), None)
             
             analyte_area_col = next((c for c in df.columns if 'area' in c and 'ratio' not in c and c != is_area_col), None)
-            
             date_col = next((c for c in df.columns if 'acq date' in c or 'acquisition date' in c or 'date/time' in c or 'date' in c), None)
+            
             acq_date = ""
             if date_col and not df[date_col].empty:
                 raw_date = str(df[date_col].iloc[0]).strip()
@@ -180,8 +198,7 @@ if st.button("Generate Dashboard"):
                 continue
             
             subj_id = "S1"
-            match = re.search(r'(S\d+(?:[-_]S\d+)*)', file.name, re.IGNORECASE)
-            if match: subj_id = match.group(1).upper()
+            if matches: subj_id = matches[-1].upper()
             elif 'REPEAT' in file.name.upper(): subj_id = "Repeat"
             elif 'ISR' in file.name.upper(): subj_id = "ISR"
                 
@@ -210,7 +227,7 @@ if st.button("Generate Dashboard"):
             out_of_range_is, above_uloq, predose_repeats = [], [], []
             carryover_samples = []
 
-            # --- PASS 1: Calculate Average IS Area strictly from ACCEPTED CCs and QCs ---
+            # --- PASS 1: Calculate Average IS Area strictly from ACCEPTED CCs and QCs & find LLOQ area ---
             valid_is_areas = []
             for index, row in df.iterrows():
                 s_name_raw = str(row[name_col]).strip()
@@ -220,14 +237,30 @@ if st.button("Generate Dashboard"):
                 acc_val = pd.to_numeric(raw_acc_val, errors='coerce') if raw_acc_val != "" else np.nan
                 raw_is_area_val = str(row[is_area_col]).strip() if is_area_col else ""
                 s_is_area = pd.to_numeric(raw_is_area_val, errors='coerce') if raw_is_area_val != "" else np.nan
+                raw_a_area_val = str(row[analyte_area_col]).strip() if analyte_area_col else ""
+                a_area = pd.to_numeric(raw_a_area_val, errors='coerce') if raw_a_area_val != "" else np.nan
                 
-                is_blank_or_zero = any(x in s_name_up for x in ['BLK', 'BLANK', 'AQSTD', '+IS', 'MPH', 'MOH', 'ESO', 'RCS', 'MOBILE', 'MP', 'RECON'])
-                is_cc_qc = (any(x in s_name_up for x in ['STD', 'CC', 'QC', 'LQC', 'MQC', 'HQC', 'QUALITY', 'STANDARD']) or 'STANDARD' in s_type_up or 'QC' in s_type_up or 'QUALITY' in s_type_up) and not is_blank_or_zero
+                is_blank_or_zero = (
+                    any(x in s_name_up for x in ['BLK', 'BLANK', 'AQSTD', 'ZERO', '+IS', 'MPH', 'MOH', 'ESO', 'RCS', 'MOBILE', 'MP', 'RECON'])
+                    or 'BLANK' in s_type_up
+                )
+                is_std = (
+                    any(x in s_name_up for x in ['STD', 'STANDARD'])
+                    or 'STANDARD' in s_type_up
+                ) and not is_blank_or_zero
+                is_qc = (
+                    any(x in s_name_up for x in ['LQC', 'MMQC', 'MQC', 'HQC', 'QC'])
+                    or 'QC' in s_type_up or 'QUALITY' in s_type_up
+                ) and not is_blank_or_zero and not is_std
+                is_cc_qc = is_std or is_qc
+                
+                if is_std and bool(re.search(r'[-_](A|1|01)$', s_name_up)) and std_a_area is None:
+                    std_a_area = a_area
                 
                 if is_cc_qc:
                     failed_ccqc = False
                     if pd.notna(acc_val):
-                        if ('STANDARD' in s_type_up or 'STD' in s_name_up) and ('-A' in s_name_up or '-1' in s_name_up):
+                        if is_std and bool(re.search(r'[-_](A|1|01)$', s_name_up)):
                             if not (80 <= acc_val <= 120): failed_ccqc = True
                         else:
                             if not (85 <= acc_val <= 115): failed_ccqc = True
@@ -237,9 +270,9 @@ if st.button("Generate Dashboard"):
                     if not failed_ccqc and pd.notna(s_is_area):
                         valid_is_areas.append(s_is_area)
                         
-            avg_is_area = sum(valid_is_areas) / len(valid_is_areas) if valid_is_areas else 0
-            lower_is_limit = avg_is_area * 0.4 if avg_is_area > 0 else 0
-            upper_is_limit = avg_is_area * 1.6 if avg_is_area > 0 else float('inf')
+            avg_is_area = sum(valid_is_areas) / len(valid_is_areas) if valid_is_areas else np.nan
+            lower_is_limit = avg_is_area * 0.4 if pd.notna(avg_is_area) and avg_is_area > 0 else 0
+            upper_is_limit = avg_is_area * 1.6 if pd.notna(avg_is_area) and avg_is_area > 0 else float('inf')
 
             ccqc_rows = []
             sample_rows = []
@@ -274,11 +307,22 @@ if st.button("Generate Dashboard"):
                 raw_acc_val = str(row[acc_col]).strip() if acc_col else ""
                 acc_val = pd.to_numeric(raw_acc_val, errors='coerce') if raw_acc_val != "" else np.nan
                 
-                is_blank_or_zero = any(x in s_name_up for x in ['BLK', 'BLANK', 'AQSTD', '+IS', 'MPH', 'MOH', 'ESO', 'RCS', 'MOBILE', 'MP', 'RECON'])
-                is_cc_qc = (any(x in s_name_up for x in ['STD', 'CC', 'QC', 'LQC', 'MQC', 'HQC', 'QUALITY', 'STANDARD']) or 'STANDARD' in s_type_up or 'QC' in s_type_up or 'QUALITY' in s_type_up) and not is_blank_or_zero
-                is_true_unknown = ('UNKNOWN' in s_type_up or s_type_up == '') and not (is_blank_or_zero or is_cc_qc)
+                is_blank_or_zero = (
+                    any(x in s_name_up for x in ['BLK', 'BLANK', 'AQSTD', 'ZERO', '+IS', 'MPH', 'MOH', 'ESO', 'RCS', 'MOBILE', 'MP', 'RECON'])
+                    or 'BLANK' in s_type_up
+                )
+                is_std = (
+                    any(x in s_name_up for x in ['STD', 'STANDARD'])
+                    or 'STANDARD' in s_type_up
+                ) and not is_blank_or_zero
+                is_qc = (
+                    any(x in s_name_up for x in ['LQC', 'MMQC', 'MQC', 'HQC', 'QC'])
+                    or 'QC' in s_type_up or 'QUALITY' in s_type_up
+                ) and not is_blank_or_zero and not is_std
+                is_cc_qc = is_std or is_qc
+                is_true_unknown = not is_blank_or_zero and not is_cc_qc
                 
-                # 1. Mobile Phase / Reconstitution Solution
+                # 1. Mobile Phase / Reconstitution Solution (Check FIRST so 'MP-BLK' isn't stolen by BLK)
                 if any(x in s_name_up for x in ['MPH', 'MOH', 'ESO', 'RCS', 'MOBILE', 'MP', 'RECON']):
                     if mph_a_area is None: mph_a_area = a_area if pd.notna(a_area) else 0.0
                     if mph_is_area is None: mph_is_area = s_is_area if pd.notna(s_is_area) else 0.0
@@ -296,7 +340,7 @@ if st.button("Generate Dashboard"):
                 if is_cc_qc:
                     if pd.notna(acc_val):
                         # LLOQ Standard limits: 80 - 120%
-                        if ('STANDARD' in s_type_up or 'STD' in s_name_up) and ('-A' in s_name_up or '-1' in s_name_up):
+                        if is_std and bool(re.search(r'[-_](A|1|01)$', s_name_up)):
                             if not (80 <= acc_val <= 120): failed_ccqc = True
                         else:
                             # ALL other Standards and QCs limits: 85 - 115%
@@ -304,44 +348,37 @@ if st.button("Generate Dashboard"):
                     else:
                         failed_ccqc = True
                 
-                if is_cc_qc and ('STD-A' in s_name_up or '-1' in s_name_up) and std_a_area is None: std_a_area = a_area
                 if ('ZERO' in s_name_up or 'AQSTD' in s_name_up or '+IS' in s_name_up) and std_zero_is_area is None: std_zero_is_area = s_is_area
                 if 'BLANK' in s_type_up or 'BLK' in s_name_up or 'MOBILE' in s_name_up: carryover_samples.append({'name': s_name_raw, 'a_area': a_area, 'is_area': s_is_area})
                 
                 if is_cc_qc:
-                    if 'STANDARD' in s_type_up or 'STD' in s_name_up:
+                    if is_std:
                         cc_total += 1
-                        if pd.notna(acc_val):
-                            if ('-A' in s_name_up or '-1' in s_name_up) and 80 <= acc_val <= 120: cc_pass += 1
-                            elif ('-A' not in s_name_up and '-1' not in s_name_up) and 85 <= acc_val <= 115: cc_pass += 1
-                            else: failed_cc_ids.append(s_name_raw)
+                        if not failed_ccqc: cc_pass += 1
                         else: failed_cc_ids.append(s_name_raw)
                         
                     if 'LQC' in s_name_up:
-                        lqc_list_objs.append({'name': s_name_raw, 'pass': pd.notna(acc_val) and 85 <= acc_val <= 115})
-                        if pd.notna(acc_val) and 85 <= acc_val <= 115: lqc_pass += 1
+                        lqc_list_objs.append({'name': s_name_raw, 'pass': not failed_ccqc})
+                        if not failed_ccqc: lqc_pass += 1
                     if 'MMQC' in s_name_up:
-                        mmqc_list_objs.append({'name': s_name_raw, 'pass': pd.notna(acc_val) and 85 <= acc_val <= 115})
-                        if pd.notna(acc_val) and 85 <= acc_val <= 115: mmqc_pass += 1
+                        mmqc_list_objs.append({'name': s_name_raw, 'pass': not failed_ccqc})
+                        if not failed_ccqc: mmqc_pass += 1
                     if 'MQC' in s_name_up and 'MMQC' not in s_name_up:
-                        mqc_list_objs.append({'name': s_name_raw, 'pass': pd.notna(acc_val) and 85 <= acc_val <= 115})
-                        if pd.notna(acc_val) and 85 <= acc_val <= 115: mqc_pass += 1
+                        mqc_list_objs.append({'name': s_name_raw, 'pass': not failed_ccqc})
+                        if not failed_ccqc: mqc_pass += 1
                     if 'HQC' in s_name_up:
-                        hqc_list_objs.append({'name': s_name_raw, 'pass': pd.notna(acc_val) and 85 <= acc_val <= 115})
-                        if pd.notna(acc_val) and 85 <= acc_val <= 115: hqc_pass += 1
+                        hqc_list_objs.append({'name': s_name_raw, 'pass': not failed_ccqc})
+                        if not failed_ccqc: hqc_pass += 1
                 
-                # --- IDENTIFY REPEATS & ANOMALIES ---
-                # 1. Out of Range %IS (For all except blanks, but we tag if it's an unknown)
-                if pd.notna(s_is_area) and not is_blank_or_zero:
-                    if s_is_area < lower_is_limit or s_is_area > upper_is_limit:
-                        out_of_range_is.append({'name': s_name_raw, 'conc': conc, 'is_unknown': is_true_unknown})
-                
-                # 2 & 3. ULOQ and Predose (Strictly clinical unknowns only)
-                if is_true_unknown and pd.notna(conc):
-                    if pd.notna(uloq) and conc > uloq:
+                # --- IDENTIFY REPEATS & ANOMALIES (Strictly Clinical Unknowns) ---
+                if is_true_unknown:
+                    if pd.notna(s_is_area) and (s_is_area < lower_is_limit or s_is_area > upper_is_limit):
+                        out_of_range_is.append({'name': s_name_raw, 'conc': conc, 'is_unknown': True})
+                    
+                    if pd.notna(conc) and pd.notna(uloq) and conc > uloq:
                         above_uloq.append({'name': s_name_raw, 'conc': conc})
                         
-                    is_predose = 'PRE' in s_name_up or bool(re.search(r'[-_]0+(?:\.0+)?(?:[-_\s]|$)', s_name_up))
+                    is_predose = 'PRE' in s_name_up or bool(re.search(r'[-_]0+(\.0+)?([-_\s]|$)', s_name_up))
                     if is_predose:
                         parts = re.split(r'[-_]', s_name_raw)
                         current_subj = parts[0].upper() if len(parts) > 0 else s_name_up
@@ -352,9 +389,11 @@ if st.button("Generate Dashboard"):
                         cmax = subj_concs.max() if not subj_concs.empty else 0
                         
                         pd_flag = False
-                        if pd.notna(lloq) and conc > lloq:
+                        if pd.notna(lloq) and pd.notna(conc) and conc > lloq:
                             pd_flag = True
-                        elif pd.notna(cmax) and cmax > 0 and conc > (0.05 * cmax):
+                        elif std_a_area is not None and pd.notna(a_area) and a_area > std_a_area:
+                            pd_flag = True
+                        elif pd.notna(cmax) and cmax > 0 and pd.notna(conc) and conc > (0.05 * cmax):
                             pd_flag = True
                             
                         if pd_flag:
@@ -364,7 +403,7 @@ if st.button("Generate Dashboard"):
                 pct_diff = np.nan
                 
                 if pd.notna(s_is_area) and pd.notna(avg_is_area) and avg_is_area > 0:
-                    pct_diff = (s_is_area / avg_is_area) * 100 - 100
+                    pct_diff = (s_is_area / avg_is_area) * 100
                     if is_cc_qc: chart_tuple[1] = pct_diff
                     elif is_blank_or_zero: chart_tuple[2] = pct_diff
                     else: chart_tuple[3] = pct_diff
@@ -398,7 +437,6 @@ if st.button("Generate Dashboard"):
                             file_sample_dupes.append(s_name_raw)
                         else:
                             seen_samples.add(s_name_up)
-                            # Direct storage of Exact string. Base mapping matches them below.
                             if file_category == "Main":
                                 global_samples[s_name_raw] = (conc, safe_sheet_name)
                             elif file_category == "Repeat":
@@ -408,15 +446,17 @@ if st.button("Generate Dashboard"):
                             
                 current_inj += 1
                 
-                for std in std_names:
-                    if std in s_name_up or std.replace("-", "") in s_name_up:
-                        file_cc_dict[std] = conc if pd.notna(conc) else ""
-                        break
+                if is_std:
+                    for std in std_names:
+                        if std in s_name_up or std.replace("-", "") in s_name_up:
+                            file_cc_dict[std] = conc if pd.notna(conc) else ""
+                            break
                 
-                if 'LQC' in s_name_up: lqc_list.append(conc if pd.notna(conc) else ""); lqc_ids.append(extract_qc_id(s_name_raw))
-                elif 'MMQC' in s_name_up: mmqc_list.append(conc if pd.notna(conc) else ""); mmqc_ids.append(extract_qc_id(s_name_raw))
-                elif 'MQC' in s_name_up and 'MMQC' not in s_name_up: mqc_list.append(conc if pd.notna(conc) else ""); mqc_ids.append(extract_qc_id(s_name_raw))
-                elif 'HQC' in s_name_up: hqc_list.append(conc if pd.notna(conc) else ""); hqc_ids.append(extract_qc_id(s_name_raw))
+                if is_qc:
+                    if 'LQC' in s_name_up: lqc_list.append(conc if pd.notna(conc) else ""); lqc_ids.append(extract_qc_id(s_name_raw))
+                    elif 'MMQC' in s_name_up: mmqc_list.append(conc if pd.notna(conc) else ""); mmqc_ids.append(extract_qc_id(s_name_raw))
+                    elif 'MQC' in s_name_up and 'MMQC' not in s_name_up: mqc_list.append(conc if pd.notna(conc) else ""); mqc_ids.append(extract_qc_id(s_name_raw))
+                    elif 'HQC' in s_name_up: hqc_list.append(conc if pd.notna(conc) else ""); hqc_ids.append(extract_qc_id(s_name_raw))
 
             file_cc_dict['Slope'] = "" if pd.isna(slope) else slope
             file_cc_dict['Intercept'] = "" if pd.isna(intercept) else intercept
@@ -426,8 +466,7 @@ if st.button("Generate Dashboard"):
             # Anomaly Tracker only monitors Main files, ignores intentional Repeats/ISRs
             if file_category == "Main":
                 for smp in out_of_range_is:
-                    if smp['is_unknown']: # Only push true unknowns to the clinical repeats tracker
-                        all_repeats_data.append({"Batch Name": safe_sheet_name, "Sample Name": smp['name'], "Concentration": smp['conc'], "Reason Code": "Out of Range %IS"})
+                    all_repeats_data.append({"Batch Name": safe_sheet_name, "Sample Name": smp['name'], "Concentration": smp['conc'], "Reason Code": "Out of Range %IS"})
                 for smp in above_uloq:
                     all_repeats_data.append({"Batch Name": safe_sheet_name, "Sample Name": smp['name'], "Concentration": smp['conc'], "Reason Code": "Above ULOQ"})
                 for smp in predose_repeats:
@@ -455,6 +494,7 @@ if st.button("Generate Dashboard"):
                 'slope': slope, 'intercept': intercept, 'r_val': r_val,
                 'avg_is_area': avg_is_area,
                 'cc_total': cc_total, 'cc_pass': cc_pass, 'failed_cc_ids': failed_cc_ids,
+                'lqc_pass': lqc_pass, 'mmqc_pass': mmqc_pass, 'mqc_pass': mqc_pass, 'hqc_pass': hqc_pass,
                 'lqc_objs': lqc_list_objs, 'mmqc_objs': mmqc_list_objs, 
                 'mqc_objs': mqc_list_objs, 'hqc_objs': hqc_list_objs,
                 'std_a_area': std_a_area, 'std_zero_is_area': std_zero_is_area,
@@ -618,6 +658,8 @@ if st.button("Generate Dashboard"):
             failed_fmt = workbook.add_format({**tnr, 'bg_color': '#FF9999', 'align': 'center', 'valign': 'vcenter'})
             
             data_white = workbook.add_format({**tnr, 'bg_color': '#FFFFFF', 'border': 1, 'align': 'center', 'valign': 'vcenter'})
+            data_white_left = workbook.add_format({**tnr, 'bg_color': '#FFFFFF', 'border': 1, 'align': 'left', 'valign': 'vcenter'})
+            data_white_int = workbook.add_format({**tnr, 'bg_color': '#FFFFFF', 'border': 1, 'align': 'center', 'valign': 'vcenter', 'num_format': '0'})
             data_white_float = workbook.add_format({**tnr, 'bg_color': '#FFFFFF', 'border': 1, 'align': 'center', 'valign': 'vcenter', 'num_format': '0.000'})
             data_white_pct = workbook.add_format({**tnr, 'bg_color': '#FFFFFF', 'border': 1, 'align': 'center', 'valign': 'vcenter', 'num_format': '0.00'})
             data_white_r = workbook.add_format({**tnr, 'bg_color': '#FFFFFF', 'border': 1, 'align': 'center', 'valign': 'vcenter', 'num_format': '0.0000'})
@@ -626,10 +668,166 @@ if st.button("Generate Dashboard"):
             table_header_gray = workbook.add_format({**tnr, 'bold': True, 'bg_color': '#D9D9D9', 'border': 1, 'align': 'center', 'valign': 'vcenter'})
             
             # Formats for highlighted anomaly rows and failed CC/QC rows
-            failed_ccqc_string_fmt = workbook.add_format({**tnr, 'bg_color': '#FFFF00', 'font_color': '#000000', 'border': 1, 'align': 'center', 'valign': 'vcenter'})
-            failed_ccqc_pct_fmt = workbook.add_format({**tnr, 'bg_color': '#FFFF00', 'font_color': '#000000', 'border': 1, 'align': 'center', 'valign': 'vcenter', 'num_format': '0.00'})
-            failed_ccqc_float_fmt = workbook.add_format({**tnr, 'bg_color': '#FFFF00', 'font_color': '#000000', 'border': 1, 'align': 'center', 'valign': 'vcenter', 'num_format': '0.000'})
+            failed_ccqc_string_fmt = workbook.add_format({**tnr, 'bg_color': '#FFFF00', 'bold': True, 'font_color': '#000000', 'border': 1, 'align': 'center', 'valign': 'vcenter'})
+            failed_ccqc_pct_fmt = workbook.add_format({**tnr, 'bg_color': '#FFFF00', 'bold': True, 'font_color': '#000000', 'border': 1, 'align': 'center', 'valign': 'vcenter', 'num_format': '0.00'})
+            failed_ccqc_float_fmt = workbook.add_format({**tnr, 'bg_color': '#FFFF00', 'bold': True, 'font_color': '#000000', 'border': 1, 'align': 'center', 'valign': 'vcenter', 'num_format': '0.000'})
             yellow_flag = failed_ccqc_float_fmt
+
+            # --- Study data verification Tab in Master File ---
+            qa_ws = workbook.add_worksheet("Study data verification")
+            qa_ws.set_column('A:B', 35, general_fmt)
+            qa_ws.set_column('C:D', 35, general_fmt)
+            qa_row = 0
+            
+            for safe_sheet_name in sorted_batch_keys:
+                meta = batch_meta_data[safe_sheet_name]
+                qa_ws.merge_range(qa_row, 0, qa_row, 6, f"Study data verification - Batch: {meta.get('full_file_name', safe_sheet_name)}", table_header_green)
+                qa_row += 1
+                
+                qa_ws.write(qa_row, 0, "LLOQ area", data_white_left)
+                std_a = meta.get('std_a_area')
+                avg_is = meta.get('avg_is_area')
+
+                qa_ws.write(qa_row, 1, std_a if pd.notna(std_a) else "N/A", data_white_int if pd.notna(std_a) else data_white)
+                qa_ws.merge_range(qa_row, 2, qa_row, 4, "Average IS area of accepted CC, QC samples", data_white_left)
+                qa_ws.merge_range(qa_row, 5, qa_row, 6, avg_is if pd.notna(avg_is) else "N/A", data_white_int if pd.notna(avg_is) else data_white)
+                qa_row += 1
+                
+                qa_ws.merge_range(qa_row, 0, qa_row, 6, "Acceptability of interference in Standard Blank, Standard Blank + IS and MPH/ESO/RCS", table_header_green)
+                qa_row += 1
+                
+                def calc_interf(area, ref_area):
+                    if pd.notna(area) and pd.notna(ref_area) and ref_area > 0:
+                        return (area / ref_area) * 100
+                    return "N/A"
+
+                blk_a = meta.get('blk_a_area'); blk_a_pct = calc_interf(blk_a, std_a)
+                blk_is = meta.get('blk_is_area'); blk_is_pct = calc_interf(blk_is, avg_is)
+                zero_a = meta.get('zero_a_area'); zero_a_pct = calc_interf(zero_a, std_a)
+                mph_a = meta.get('mph_a_area'); mph_a_pct = calc_interf(mph_a, std_a)
+                mph_is = meta.get('mph_is_area'); mph_is_pct = calc_interf(mph_is, avg_is)
+                
+                interf_accepted = "Accepted"
+                for pct in [blk_a_pct, zero_a_pct, mph_a_pct]:
+                    if isinstance(pct, (int, float)) and pct > 20.0: interf_accepted = "Not Accepted"
+                for pct in [blk_is_pct, mph_is_pct]:
+                    if isinstance(pct, (int, float)) and pct > 5.0: interf_accepted = "Not Accepted"
+
+                def write_interf_row(label, area, pct):
+                    qa_ws.merge_range(qa_row, 0, qa_row, 1, label, data_white_left)
+                    qa_ws.merge_range(qa_row, 2, qa_row, 3, area if pd.notna(area) else "N/A", data_white_int if pd.notna(area) else data_white)
+                    qa_ws.merge_range(qa_row, 4, qa_row, 5, "% Interference", data_white)
+                    qa_ws.write(qa_row, 6, pct, data_white_pct if isinstance(pct, (int, float)) else data_white)
+
+                write_interf_row("Area Observed for Standard Blank at Analyte RT:", blk_a if pd.notna(blk_a) else 0.0, blk_a_pct); qa_row += 1
+                write_interf_row("Area Observed for Standard Blank at IS RT:", blk_is if pd.notna(blk_is) else 0.0, blk_is_pct); qa_row += 1
+                write_interf_row("Area Observed for Standard Blank+IS at Analyte RT:", zero_a if pd.notna(zero_a) else 0.0, zero_a_pct); qa_row += 1
+                write_interf_row("Area Observed for MPH/ESO/RCS at Analyte RT:", mph_a if pd.notna(mph_a) else 0.0, mph_a_pct); qa_row += 1
+                write_interf_row("Area Observed for MPH/ESO/RCS at IS RT:", mph_is if pd.notna(mph_is) else 0.0, mph_is_pct); qa_row += 1
+
+                qa_ws.merge_range(qa_row, 0, qa_row, 3, "% Interference for Standard Blank, Standard Blank+IS, MPH/ESO/RCS:", data_white_left)
+                qa_ws.merge_range(qa_row, 4, qa_row, 6, interf_accepted, data_white)
+                qa_row += 1
+                
+                qa_ws.merge_range(qa_row, 0, qa_row, 6, "Acceptability of Non-Zero calibration curve standards", table_header_green)
+                qa_row += 1
+                qa_ws.write(qa_row, 0, "CC ID:", data_white_left)
+                qa_ws.merge_range(qa_row, 1, qa_row, 3, meta.get('ccid_str', ''), data_white)
+                ref_r = meta.get('r_val', '')
+                qa_ws.merge_range(qa_row, 4, qa_row, 5, "'r' value", data_white_left)
+                qa_ws.write(qa_row, 6, "" if pd.isna(ref_r) else ref_r, data_white_r if isinstance(ref_r, (int, float)) and pd.notna(ref_r) else data_white)
+                qa_row += 1
+                
+                cc_total = meta.get('cc_total', 0); cc_pass = meta.get('cc_pass', 0)
+                cc_status = "Accepted" if cc_total >= 6 and (cc_pass / cc_total) >= 0.75 else "Not Accepted"
+                
+                qa_ws.write(qa_row, 0, "No. of CC standards injected", data_white_left)
+                qa_ws.merge_range(qa_row, 1, qa_row, 3, cc_total, data_white)
+                qa_ws.merge_range(qa_row, 4, qa_row, 5, "No. of CC standard accepted", data_white_left)
+                qa_ws.write(qa_row, 6, cc_pass, data_white)
+                qa_row += 1
+                
+                qa_ws.write(qa_row, 0, "Details of Failed CC standard(s), if any", data_white_left)
+                qa_ws.merge_range(qa_row, 1, qa_row, 6, ", ".join(meta.get('failed_cc_ids', [])), data_white)
+                qa_row += 1
+                qa_ws.write(qa_row, 0, "Calibration curve status:", data_white_left)
+                qa_ws.merge_range(qa_row, 1, qa_row, 6, cc_status, data_white)
+                qa_row += 1
+                
+                qa_ws.merge_range(qa_row, 0, qa_row, 6, "Acceptability of QC Samples", table_header_green)
+                qa_row += 1
+                qa_ws.merge_range(qa_row, 0, qa_row + 1, 0, "QC ID", table_header_green)
+                qa_ws.merge_range(qa_row, 1, qa_row, 2, "Total No. of QC Injected", table_header_green)
+                qa_ws.merge_range(qa_row, 3, qa_row, 4, "Total No. of QC Passed", table_header_green)
+                qa_ws.merge_range(qa_row, 5, qa_row, 6, "Acceptance status Yes/ No", table_header_green)
+                qa_row += 1
+                
+                qa_ws.write(qa_row, 1, "Set-1", table_header_green); qa_ws.write(qa_row, 2, "Set-2", table_header_green)
+                qa_ws.write(qa_row, 3, "Set-1", table_header_green); qa_ws.write(qa_row, 4, "Set-2", table_header_green)
+                qa_ws.write(qa_row, 5, "Set-1", table_header_green); qa_ws.write(qa_row, 6, "Set-2", table_header_green)
+                qa_row += 1
+                
+                def process_qc_sets(objs):
+                    mid = len(objs) // 2
+                    set1 = objs[:mid] if mid > 0 else objs
+                    set2 = objs[mid:] if mid > 0 else []
+                    s1_t, s1_p = len(set1), sum(1 for o in set1 if o['pass'])
+                    s2_t, s2_p = len(set2), sum(1 for o in set2 if o['pass'])
+                    
+                    s1_ok = "Yes" if s1_t > 0 and (s1_p / s1_t) >= 0.5 else ("-" if s1_t == 0 else "No")
+                    s2_ok = "Yes" if s2_t > 0 and (s2_p / s2_t) >= 0.5 else ("-" if s2_t == 0 else "No")
+                    
+                    f_id = extract_qc_id(objs[0]['name']) if objs else ""
+                    l_id = extract_qc_id(objs[-1]['name']) if objs else ""
+                    return f"({f_id}-{l_id})" if f_id and l_id else "", s1_t, s2_t, s1_p, s2_p, s1_ok, s2_ok
+                
+                tot_s1_inj = tot_s2_inj = tot_s1_pass = tot_s2_pass = 0
+                
+                for qc_lvl, objs in [("LQC", meta.get('lqc_objs',[])), ("MMQC", meta.get('mmqc_objs',[])), ("MQC", meta.get('mqc_objs',[])), ("HQC", meta.get('hqc_objs',[]))]:
+                    id_str, s1_t, s2_t, s1_p, s2_p, s1_ok, s2_ok = process_qc_sets(objs)
+                    tot_s1_inj += s1_t; tot_s2_inj += s2_t; tot_s1_pass += s1_p; tot_s2_pass += s2_p
+                    
+                    qa_ws.write(qa_row, 0, f"{qc_lvl} {id_str}", data_white_left)
+                    qa_ws.write(qa_row, 1, s1_t, data_white); qa_ws.write(qa_row, 2, s2_t, data_white)
+                    qa_ws.write(qa_row, 3, s1_p, data_white); qa_ws.write(qa_row, 4, s2_p, data_white)
+                    qa_ws.write(qa_row, 5, s1_ok, data_white); qa_ws.write(qa_row, 6, s2_ok, data_white)
+                    qa_row += 1
+                    
+                qa_ws.write(qa_row, 0, "Total no. of QCs", data_white_left)
+                qa_ws.write(qa_row, 1, tot_s1_inj, data_white); qa_ws.write(qa_row, 2, tot_s2_inj, data_white)
+                qa_ws.write(qa_row, 3, tot_s1_pass, data_white); qa_ws.write(qa_row, 4, tot_s2_pass, data_white)
+                
+                g_s1_ok = "Yes" if tot_s1_inj > 0 and (tot_s1_pass / tot_s1_inj) >= 0.67 else ("-" if tot_s1_inj==0 else "No")
+                g_s2_ok = "Yes" if tot_s2_inj > 0 and (tot_s2_pass / tot_s2_inj) >= 0.67 else ("-" if tot_s2_inj==0 else "No")
+                qa_ws.write(qa_row, 5, g_s1_ok, data_white); qa_ws.write(qa_row, 6, g_s2_ok, data_white)
+                qa_row += 1
+                
+                qa_ws.merge_range(qa_row, 0, qa_row, 6, "Repeat Sample Identification", table_header_green)
+                qa_row += 1
+                qa_ws.merge_range(qa_row, 0, qa_row, 1, "S.No", table_header_green)
+                qa_ws.merge_range(qa_row, 2, qa_row, 4, "Sample Name", table_header_green)
+                qa_ws.merge_range(qa_row, 5, qa_row, 6, "Repeat code", table_header_green)
+                qa_row += 1
+                
+                rep_count = 1
+                for smp in meta.get('out_of_range', []):
+                    if smp.get('is_unknown', True):
+                        qa_ws.merge_range(qa_row, 0, qa_row, 1, rep_count, data_white)
+                        qa_ws.merge_range(qa_row, 2, qa_row, 4, smp['name'], data_white)
+                        qa_ws.merge_range(qa_row, 5, qa_row, 6, "Out of Range %IS", data_white)
+                        rep_count += 1; qa_row += 1
+                for smp in meta.get('above_uloq', []):
+                    qa_ws.merge_range(qa_row, 0, qa_row, 1, rep_count, data_white)
+                    qa_ws.merge_range(qa_row, 2, qa_row, 4, smp['name'], data_white)
+                    qa_ws.merge_range(qa_row, 5, qa_row, 6, "Above ULOQ", data_white)
+                    rep_count += 1; qa_row += 1
+                for smp in meta.get('predose_repeats', []):
+                    qa_ws.merge_range(qa_row, 0, qa_row, 1, rep_count, data_white)
+                    qa_ws.merge_range(qa_row, 2, qa_row, 4, smp['name'], data_white)
+                    qa_ws.merge_range(qa_row, 5, qa_row, 6, "Predose Detectable", data_white)
+                    rep_count += 1; qa_row += 1
+                    
+                qa_row += 3
 
             for sheet_name in ["Summary", "Repeats", "Repeat Analysis", "ISR Analysis", "CC", "QC"]:
                 if sheet_name in excel_tabs:
@@ -699,7 +897,8 @@ if st.button("Generate Dashboard"):
                         ws.merge_range(r_idx, 0, r_idx, 4, row_dict["Sample Name"], table_header_green)
                     elif row_dict["Sample Name"] == "Average IS area of CC and QC":
                         ws.merge_range(r_idx, 0, r_idx, 1, row_dict["Sample Name"], table_header_gray)
-                        ws.write(r_idx, 2, row_dict["IS area"], data_white)
+                        avg_val = row_dict["IS area"]
+                        ws.write(r_idx, 2, "" if pd.isna(avg_val) else avg_val, data_white_pct if pd.notna(avg_val) else data_white)
                         ws.write(r_idx, 3, "", data_white)
                         ws.write(r_idx, 4, "", data_white)
                     elif row_dict["Sample Name"] == "Sample Name":
@@ -724,7 +923,7 @@ if st.button("Generate Dashboard"):
                             a_display = int(row_dict["Area"]) if isinstance(row_dict["Area"], float) and row_dict["Area"].is_integer() else row_dict["Area"]
                         elif row_dict["Raw.Area"] != "" and row_dict["Raw.Area"].upper() != 'NAN':
                             a_display = row_dict["Raw.Area"]
-                        ws.write(r_idx, 1, a_display, fmt_str if isinstance(a_display, str) else fmt_flt)
+                        ws.write(r_idx, 1, a_display, fmt_str)
                         
                         is_display = ""
                         if pd.notna(row_dict["IS area"]):
@@ -745,7 +944,7 @@ if st.button("Generate Dashboard"):
                             c_display = row_dict["Raw.Conc."]
                             
                         if pd.notna(row_dict["Calc.Conc."]) and isinstance(c_display, (int, float)):
-                            if c_display > uloq:
+                            if pd.notna(uloq) and c_display > uloq:
                                 ws.write(r_idx, 3, c_display, data_yellow_float)
                             else:
                                 ws.write(r_idx, 3, c_display, fmt_flt)
@@ -753,12 +952,10 @@ if st.button("Generate Dashboard"):
                             ws.write(r_idx, 3, c_display, fmt_str)
                             
                         acc = row_dict.get("% Accuracy", "")
-                        if highlight_row:
-                            if pd.isna(acc) or acc == "": ws.write(r_idx, 4, "", fmt_str)
-                            else: ws.write(r_idx, 4, acc, fmt_pct)
+                        if pd.isna(acc) or acc == "":
+                            ws.write(r_idx, 4, "", fmt_str)
                         else:
-                            if pd.isna(acc) or acc == "": ws.write(r_idx, 4, "", fmt_str)
-                            else: ws.write(r_idx, 4, acc, fmt_pct)
+                            ws.write(r_idx, 4, acc, fmt_pct)
 
                     c_tuple = chart_data[r_idx]
                     ws.write(r_idx, 26, "" if pd.isna(c_tuple[0]) else c_tuple[0])
@@ -769,12 +966,15 @@ if st.button("Generate Dashboard"):
 
                 ws.set_column(26, 30, None, None, {'hidden': True})
                 
+                int_val = meta.get('intercept', '')
+                slp_val = meta.get('slope', '')
+                rv_val = meta.get('r_val', '')
                 ws.write('G2', 'Intercept', data_white)
-                ws.write('H2', meta.get('intercept', ''), data_white)
+                ws.write('H2', "" if pd.isna(int_val) else int_val, data_white)
                 ws.write('G3', 'Slope', data_white)
-                ws.write('H3', meta.get('slope', ''), data_white)
+                ws.write('H3', "" if pd.isna(slp_val) else slp_val, data_white)
                 ws.write('G4', 'r', data_white)
-                ws.write('H4', meta.get('r_val', ''), data_white_r)
+                ws.write('H4', "" if pd.isna(rv_val) else rv_val, data_white_r if isinstance(rv_val, (int, float)) and pd.notna(rv_val) else data_white)
                 
                 ws.write('G6', 'No of CC passed', table_header_gray)
                 ws.write('H6', meta.get('cc_pass', ''), data_white)
@@ -806,9 +1006,9 @@ if st.button("Generate Dashboard"):
                 
                 if max_row > 3:
                     chart1 = workbook.add_chart({'type': 'scatter'})
-                    chart1.add_series({'name': 'Samples', 'categories': [safe_sheet_name, 3, 26, max_row-1, 26], 'values': [safe_sheet_name, 3, 29, max_row-1, 29], 'marker': {'type': 'circle', 'size': 5, 'fill': {'color': '#4F81BD'}, 'border': {'none': True}}, 'line': {'none': True}})
-                    chart1.add_series({'name': 'Blank', 'categories': [safe_sheet_name, 3, 26, max_row-1, 26], 'values': [safe_sheet_name, 3, 28, max_row-1, 28], 'marker': {'type': 'circle', 'size': 5, 'fill': {'color': '#F79646'}, 'border': {'none': True}}, 'line': {'none': True}})
-                    chart1.add_series({'name': 'CCQC', 'categories': [safe_sheet_name, 3, 26, max_row-1, 26], 'values': [safe_sheet_name, 3, 27, max_row-1, 27], 'marker': {'type': 'circle', 'size': 5, 'fill': {'color': '#C0504D'}, 'border': {'none': True}}, 'line': {'none': True}})
+                    chart1.add_series({'name': 'Samples', 'categories': [safe_sheet_name, 1, 26, max_row-1, 26], 'values': [safe_sheet_name, 1, 29, max_row-1, 29], 'marker': {'type': 'circle', 'size': 5, 'fill': {'color': '#4F81BD'}, 'border': {'none': True}}, 'line': {'none': True}})
+                    chart1.add_series({'name': 'Blank', 'categories': [safe_sheet_name, 1, 26, max_row-1, 26], 'values': [safe_sheet_name, 1, 28, max_row-1, 28], 'marker': {'type': 'circle', 'size': 5, 'fill': {'color': '#F79646'}, 'border': {'none': True}}, 'line': {'none': True}})
+                    chart1.add_series({'name': 'CCQC', 'categories': [safe_sheet_name, 1, 26, max_row-1, 26], 'values': [safe_sheet_name, 1, 27, max_row-1, 27], 'marker': {'type': 'circle', 'size': 5, 'fill': {'color': '#C0504D'}, 'border': {'none': True}}, 'line': {'none': True}})
                     chart1.set_title({'name': 'IS Variation Plot', 'name_font': {'size': 12, 'name': 'Times New Roman'}})
                     chart1.set_x_axis({'name': 'Injection Order', 'name_font': {'size': 10, 'name': 'Times New Roman'}, 'num_font': {'name': 'Times New Roman'}, 'major_gridlines': {'visible': False}})
                     chart1.set_y_axis({'name': '% Difference from Mean IS', 'name_font': {'size': 10, 'name': 'Times New Roman'}, 'num_font': {'name': 'Times New Roman'}, 'major_gridlines': {'visible': True}, 'num_format': '0.00'})
@@ -818,7 +1018,7 @@ if st.button("Generate Dashboard"):
                     ws.insert_chart('G18', chart1)
                     
                     chart2 = workbook.add_chart({'type': 'scatter', 'subtype': 'straight_with_markers'})
-                    chart2.add_series({'name': 'Concentration', 'categories': [safe_sheet_name, 3, 26, max_row-1, 26], 'values': [safe_sheet_name, 3, 30, max_row-1, 30], 'marker': {'type': 'diamond', 'size': 5, 'fill': {'color': '#4F81BD'}, 'border': {'color': '#4F81BD'}}, 'line': {'color': '#4F81BD', 'width': 1.5}})
+                    chart2.add_series({'name': 'Concentration', 'categories': [safe_sheet_name, 1, 26, max_row-1, 26], 'values': [safe_sheet_name, 1, 30, max_row-1, 30], 'marker': {'type': 'diamond', 'size': 5, 'fill': {'color': '#4F81BD'}, 'border': {'color': '#4F81BD'}}, 'line': {'color': '#4F81BD', 'width': 1.5}})
                     chart2.set_title({'name': 'Chart Title', 'name_font': {'size': 14, 'bold': True, 'name': 'Times New Roman'}})
                     chart2.set_x_axis({'major_gridlines': {'visible': False}, 'num_font': {'name': 'Times New Roman'}})
                     chart2.set_y_axis({'major_gridlines': {'visible': True}, 'num_format': '0.000', 'num_font': {'name': 'Times New Roman'}})
@@ -836,18 +1036,17 @@ if st.button("Generate Dashboard"):
                     ws.write(or_start, 10, "Predose Detectable", table_header_green)
                     ws.write(or_start, 11, "Concentration", table_header_green)
                     
-                    out_is = meta.get('out_of_range', [])
+                    out_is = [smp for smp in meta.get('out_of_range', []) if smp.get('is_unknown', True)]
                     for i, smp in enumerate(out_is):
-                        if smp.get('is_unknown', True):
-                            ws.write(or_start + 1 + i, 6, smp['name'], data_white)
+                        ws.write(or_start + 1 + i, 6, smp['name'], data_white)
+                        
+                        conc_val = smp['conc'] if pd.notna(smp['conc']) else ""
+                        if pd.notna(smp['conc']):
+                            fmt = data_yellow_float if pd.notna(uloq) and smp['conc'] > uloq else data_white_float
+                        else:
+                            fmt = data_white
                             
-                            conc_val = smp['conc'] if pd.notna(smp['conc']) else ""
-                            if pd.notna(smp['conc']):
-                                fmt = data_yellow_float if smp['conc'] > uloq else data_white_float
-                            else:
-                                fmt = data_white
-                                
-                            ws.write(or_start + 1 + i, 7, conc_val, fmt)
+                        ws.write(or_start + 1 + i, 7, conc_val, fmt)
                         
                     above_u = meta.get('above_uloq', [])
                     for i, smp in enumerate(above_u):
@@ -860,7 +1059,7 @@ if st.button("Generate Dashboard"):
                         
                         conc_val = smp['conc'] if pd.notna(smp['conc']) else ""
                         if pd.notna(smp['conc']):
-                            fmt = data_yellow_float if smp['conc'] > uloq else data_white_float
+                            fmt = data_yellow_float
                         else:
                             fmt = data_white
                             
@@ -1138,11 +1337,6 @@ if st.button("Generate Dashboard"):
             data_white_sdv = workbook_sdv.add_format({**tnr, 'bg_color': '#FFFFFF', 'border': 1, 'align': 'center', 'valign': 'vcenter'})
             general_fmt_sdv = workbook_sdv.add_format({**tnr, 'align': 'center', 'valign': 'vcenter'})
             
-            # Formats for highlighted anomaly rows and failed CC/QC rows (SDV specific)
-            failed_ccqc_string_fmt_sdv = workbook_sdv.add_format({**tnr, 'bg_color': '#FFFF00', 'font_color': '#000000', 'border': 1, 'align': 'center', 'valign': 'vcenter'})
-            failed_ccqc_pct_fmt_sdv = workbook_sdv.add_format({**tnr, 'bg_color': '#FFFF00', 'font_color': '#000000', 'border': 1, 'align': 'center', 'valign': 'vcenter', 'num_format': '0.00'})
-            failed_ccqc_float_fmt_sdv = workbook_sdv.add_format({**tnr, 'bg_color': '#FFFF00', 'font_color': '#000000', 'border': 1, 'align': 'center', 'valign': 'vcenter', 'num_format': '0.000'})
-            
             for safe_sheet_name in sorted_batch_keys:
                 meta = batch_meta_data[safe_sheet_name]
                 sheet_title = safe_sheet_name[:31]
@@ -1203,8 +1397,9 @@ if st.button("Generate Dashboard"):
                 qa_row += 1
                 qa_ws.write(qa_row, 0, "CC ID:", data_white_left_sdv)
                 qa_ws.merge_range(qa_row, 1, qa_row, 3, meta.get('ccid_str', ''), data_white_sdv)
+                ref_r = meta.get('r_val', '')
                 qa_ws.merge_range(qa_row, 4, qa_row, 5, "'r' value", data_white_left_sdv)
-                qa_ws.write(qa_row, 6, meta.get('r_val', ''), data_white_r_sdv)
+                qa_ws.write(qa_row, 6, "" if pd.isna(ref_r) else ref_r, data_white_r_sdv if isinstance(ref_r, (int, float)) and pd.notna(ref_r) else data_white_sdv)
                 qa_row += 1
                 
                 cc_total = meta.get('cc_total', 0); cc_pass = meta.get('cc_pass', 0)
@@ -1284,148 +1479,17 @@ if st.button("Generate Dashboard"):
                         qa_ws.merge_range(qa_row, 0, qa_row, 1, rep_count, data_white_sdv)
                         qa_ws.merge_range(qa_row, 2, qa_row, 4, smp['name'], data_white_sdv)
                         qa_ws.merge_range(qa_row, 5, qa_row, 6, "Out of Range %IS", data_white_sdv)
-                        
-                        conc_val = smp['conc'] if pd.notna(smp['conc']) else ""
-                        if pd.notna(smp['conc']):
-                            fmt = data_yellow_float_sdv if smp['conc'] > uloq else data_white_float_sdv
-                        else:
-                            fmt = data_white_sdv
-                            
-                        qa_ws.write(qa_row, 7, conc_val, fmt)
-                        
                         rep_count += 1; qa_row += 1
                 for smp in meta.get('above_uloq', []):
                     qa_ws.merge_range(qa_row, 0, qa_row, 1, rep_count, data_white_sdv)
                     qa_ws.merge_range(qa_row, 2, qa_row, 4, smp['name'], data_white_sdv)
                     qa_ws.merge_range(qa_row, 5, qa_row, 6, "Above ULOQ", data_white_sdv)
-                    
-                    conc_val = smp['conc'] if pd.notna(smp['conc']) else ""
-                    if pd.notna(smp['conc']):
-                        fmt = data_yellow_float_sdv if smp['conc'] > uloq else data_white_float_sdv
-                    else:
-                        fmt = data_white_sdv
-                        
-                    qa_ws.write(qa_row, 7, conc_val, fmt)
-                    
                     rep_count += 1; qa_row += 1
-                    
-                predose_u = meta.get('predose_repeats', [])
-                for i, smp in enumerate(predose_u):
+                for smp in meta.get('predose_repeats', []):
                     qa_ws.merge_range(qa_row, 0, qa_row, 1, rep_count, data_white_sdv)
                     qa_ws.merge_range(qa_row, 2, qa_row, 4, smp['name'], data_white_sdv)
                     qa_ws.merge_range(qa_row, 5, qa_row, 6, "Predose Detectable", data_white_sdv)
-                    
-                    conc_val = smp['conc'] if pd.notna(smp['conc']) else ""
-                    if pd.notna(smp['conc']):
-                        fmt = data_yellow_float_sdv if smp['conc'] > uloq else data_white_float_sdv
-                    else:
-                        fmt = data_white_sdv
-                        
-                    qa_ws.write(qa_row, 7, conc_val, fmt)
-                    
                     rep_count += 1; qa_row += 1
-
-                anomaly_names = set(
-                    [s['name'] for s in meta.get('out_of_range', []) if s.get('is_unknown', True)] + 
-                    [s['name'] for s in meta.get('above_uloq', [])] + 
-                    [s['name'] for s in meta.get('predose_repeats', [])]
-                )
-                
-                # We reuse max_row for placement context but iterate from index 0 inside final_rows for the table
-                row_offset_for_data = qa_row + 2
-                
-                for r_idx, row_dict in enumerate(final_rows):
-                    if row_dict["Sample Name"] == "CC and QC":
-                        qa_ws.merge_range(r_idx + row_offset_for_data, 0, r_idx + row_offset_for_data, 4, row_dict["Sample Name"], table_header_green_sdv)
-                    elif row_dict["Sample Name"] == "Average IS area of CC and QC":
-                        qa_ws.merge_range(r_idx + row_offset_for_data, 0, r_idx + row_offset_for_data, 1, row_dict["Sample Name"], table_header_gray)
-                        qa_ws.write(r_idx + row_offset_for_data, 2, row_dict["IS area"], data_white_sdv)
-                        qa_ws.write(r_idx + row_offset_for_data, 3, "", data_white_sdv)
-                        qa_ws.write(r_idx + row_offset_for_data, 4, "", data_white_sdv)
-                    elif row_dict["Sample Name"] == "Sample Name":
-                        qa_ws.write(r_idx + row_offset_for_data, 0, "Sample Name", table_header_green_sdv)
-                        qa_ws.write(r_idx + row_offset_for_data, 1, "Area", table_header_green_sdv)
-                        qa_ws.write(r_idx + row_offset_for_data, 2, "IS area", table_header_green_sdv)
-                        qa_ws.write(r_idx + row_offset_for_data, 3, "Calc.Conc.", table_header_green_sdv)
-                        qa_ws.write(r_idx + row_offset_for_data, 4, row_dict.get("% Accuracy", "% Acc"), table_header_green_sdv)
-                    else:
-                        is_failed = row_dict.get("failed_ccqc", False)
-                        is_anomaly = row_dict["Sample Name"] in anomaly_names
-                        highlight_row = is_failed or is_anomaly
-                        
-                        fmt_str = failed_ccqc_string_fmt_sdv if highlight_row else data_white_sdv
-                        fmt_flt = failed_ccqc_float_fmt_sdv if highlight_row else data_white_float_sdv
-                        fmt_pct = failed_ccqc_pct_fmt_sdv if highlight_row else data_white_pct_sdv
-                        
-                        qa_ws.write(r_idx + row_offset_for_data, 0, row_dict["Sample Name"], fmt_str)
-                        
-                        a_display = ""
-                        if pd.notna(row_dict["Area"]):
-                            a_display = int(row_dict["Area"]) if isinstance(row_dict["Area"], float) and row_dict["Area"].is_integer() else row_dict["Area"]
-                        elif row_dict["Raw.Area"] != "" and row_dict["Raw.Area"].upper() != 'NAN':
-                            a_display = row_dict["Raw.Area"]
-                        qa_ws.write(r_idx + row_offset_for_data, 1, a_display, fmt_str if isinstance(a_display, str) else fmt_flt)
-                        
-                        is_display = ""
-                        if pd.notna(row_dict["IS area"]):
-                            is_display = int(row_dict["IS area"]) if isinstance(row_dict["IS area"], float) and row_dict["IS area"].is_integer() else row_dict["IS area"]
-                        elif row_dict["Raw.IS"] != "" and row_dict["Raw.IS"].upper() != 'NAN':
-                            is_display = row_dict["Raw.IS"]
-                            
-                        # Apply asterisk solely if it's a CC/QC that failed acceptance
-                        if is_failed and is_display != "":
-                            qa_ws.write(r_idx + row_offset_for_data, 2, f"{is_display}*", fmt_str)
-                        else:
-                            qa_ws.write(r_idx + row_offset_for_data, 2, is_display, fmt_str)
-                            
-                        c_display = ""
-                        if pd.notna(row_dict["Calc.Conc."]):
-                            c_display = row_dict["Calc.Conc."]
-                        elif row_dict["Raw.Conc."] != "" and row_dict["Raw.Conc."].upper() != 'NAN':
-                            c_display = row_dict["Raw.Conc."]
-                            
-                        if pd.notna(row_dict["Calc.Conc."]) and isinstance(c_display, (int, float)):
-                            if c_display > uloq:
-                                qa_ws.write(r_idx + row_offset_for_data, 3, c_display, data_yellow_float_sdv)
-                            else:
-                                qa_ws.write(r_idx + row_offset_for_data, 3, c_display, fmt_flt)
-                        else:
-                            qa_ws.write(r_idx + row_offset_for_data, 3, c_display, fmt_str)
-                            
-                        acc = row_dict.get("% Accuracy", "")
-                        if highlight_row:
-                            if pd.isna(acc) or acc == "": qa_ws.write(r_idx + row_offset_for_data, 4, "", fmt_str)
-                            else: qa_ws.write(r_idx + row_offset_for_data, 4, acc, fmt_pct)
-                        else:
-                            if pd.isna(acc) or acc == "": qa_ws.write(r_idx + row_offset_for_data, 4, "", fmt_str)
-                            else: qa_ws.write(r_idx + row_offset_for_data, 4, acc, fmt_pct)
-                            
-                if max_row > 3:
-                    c_start = row_offset_for_data + 3
-                    c_end = row_offset_for_data + max_row - 1
-                    
-                    chart1 = workbook_sdv.add_chart({'type': 'scatter'})
-                    chart1.add_series({'name': 'Samples', 'categories': [sheet_title, c_start, 26, c_end, 26], 'values': [sheet_title, c_start, 29, c_end, 29], 'marker': {'type': 'circle', 'size': 5, 'fill': {'color': '#4F81BD'}, 'border': {'none': True}}, 'line': {'none': True}})
-                    chart1.add_series({'name': 'Blank', 'categories': [sheet_title, c_start, 26, c_end, 26], 'values': [sheet_title, c_start, 28, c_end, 28], 'marker': {'type': 'circle', 'size': 5, 'fill': {'color': '#F79646'}, 'border': {'none': True}}, 'line': {'none': True}})
-                    chart1.add_series({'name': 'CCQC', 'categories': [sheet_title, c_start, 26, c_end, 26], 'values': [sheet_title, c_start, 27, c_end, 27], 'marker': {'type': 'circle', 'size': 5, 'fill': {'color': '#C0504D'}, 'border': {'none': True}}, 'line': {'none': True}})
-                    chart1.set_title({'name': 'IS Variation Plot', 'name_font': {'size': 12, 'name': 'Times New Roman'}})
-                    chart1.set_x_axis({'name': 'Injection Order', 'name_font': {'size': 10, 'name': 'Times New Roman'}, 'num_font': {'name': 'Times New Roman'}, 'major_gridlines': {'visible': False}})
-                    chart1.set_y_axis({'name': '% Difference from Mean IS', 'name_font': {'size': 10, 'name': 'Times New Roman'}, 'num_font': {'name': 'Times New Roman'}, 'major_gridlines': {'visible': True}, 'num_format': '0.00'})
-                    chart1.set_legend({'position': 'right', 'font': {'name': 'Times New Roman', 'size': 10}})
-                    chart1.set_size({'width': 450, 'height': 230})
-                    chart1.show_hidden_data()
-                    qa_ws.insert_chart('G18', chart1) 
-                    
-                    chart2 = workbook_sdv.add_chart({'type': 'scatter', 'subtype': 'straight_with_markers'})
-                    chart2.add_series({'name': 'Concentration', 'categories': [sheet_title, c_start, 26, c_end, 26], 'values': [sheet_title, c_start, 30, c_end, 30], 'marker': {'type': 'diamond', 'size': 5, 'fill': {'color': '#4F81BD'}, 'border': {'color': '#4F81BD'}}, 'line': {'color': '#4F81BD', 'width': 1.5}})
-                    chart2.set_title({'name': 'Chart Title', 'name_font': {'size': 14, 'bold': True, 'name': 'Times New Roman'}})
-                    chart2.set_x_axis({'major_gridlines': {'visible': False}, 'num_font': {'name': 'Times New Roman'}})
-                    chart2.set_y_axis({'major_gridlines': {'visible': True}, 'num_format': '0.000', 'num_font': {'name': 'Times New Roman'}})
-                    chart2.set_legend({'none': True})
-                    chart2.set_size({'width': 450, 'height': 230})
-                    chart2.show_hidden_data()
-                    chart2.show_blanks_as('span')
-                    qa_ws.insert_chart('G30', chart2)
 
         st.success("Successfully Processed! Ready to Download.")
         
