@@ -850,10 +850,19 @@ if st.button("Generate Dashboard"):
                     ws.write(or_start, 10, "Dose Repeats", table_header_green)
                     ws.write(or_start, 11, "Concentration", table_header_green)
                     
-                    out_is = meta.get('out_of_range', [])
+                   out_is = meta.get('out_of_range', [])
                     for i, smp in enumerate(out_is):
                         ws.write(or_start + 1 + i, 6, smp['name'], data_white)
-                        ws.write(or_start + 1 + i, 7, smp['conc'], data_yellow_float if pd.notna(smp['conc']) and smp['conc'] > uloq else data_white_float)
+                        
+                        # --- FIX: Handle NaN values for concentration ---
+                        conc_val = smp['conc'] if pd.notna(smp['conc']) else ""
+                        
+                        if pd.notna(smp['conc']):
+                            fmt = data_yellow_float if smp['conc'] > uloq else data_white_float
+                        else:
+                            fmt = data_white
+                            
+                        ws.write(or_start + 1 + i, 7, conc_val, fmt)
                         
                     above_u = meta.get('above_uloq', [])
                     for i, smp in enumerate(above_u):
