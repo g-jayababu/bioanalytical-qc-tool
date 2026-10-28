@@ -260,32 +260,34 @@ if st.button("Generate Dashboard"):
                     if 'MQC' in s_name_up and 'MMQC' not in s_name_up and 85 <= acc_val <= 115: mqc_pass += 1
                     if 'HQC' in s_name_up and 85 <= acc_val <= 115: hqc_pass += 1
                 
-                # Check for Repeats ONLY on 'UNKNOWN' types (Ignore Standards, QCs, Blanks)
-                if pd.notna(s_is_area) and 'UNKNOWN' in s_type_up:
-                    if s_is_area < lower_is_limit or s_is_area > upper_is_limit:
-                        if 'BLK' not in s_name_up and 'AQSTD' not in s_name_up and '+IS' not in s_name_up and 'BLANK' not in s_type_up:
-                            out_of_range_is.append({'name': s_name_raw, 'conc': conc})
+                # --- IDENTIFY REPEATS & ANOMALIES ---
+                # Strictly isolate clinical unknowns from CCs, QCs, and Blanks
+                is_blank_or_zero = any(x in s_name_up for x in ['BLK', 'BLANK', 'AQSTD', '+IS', 'MPH', 'MOH', 'ESO', 'RCS', 'MOBILE', 'MP', 'RECON'])
+                is_cc_qc = any(x in s_name_up for x in ['STD', 'CC', 'QC', 'LQC', 'MQC', 'HQC', 'QUALITY', 'STANDARD'])
+                is_true_unknown = ('UNKNOWN' in s_type_up or s_type_up == '') and not (is_blank_or_zero or is_cc_qc)
                 
-                if 'UNKNOWN' in s_type_up and pd.notna(conc):
-                    if conc > uloq:
-                        if 'BLK' not in s_name_up and 'AQSTD' not in s_name_up and '+IS' not in s_name_up and 'BLANK' not in s_type_up:
-                            above_uloq.append({'name': s_name_raw, 'conc': conc})
-                    
-                    # Predose check for UNKNOWN samples
-                    is_predose = 'PRE' in s_name_up or bool(re.search(r'[-_]0(\.0+)?$', s_name_up))
-                    if is_predose and 'BLK' not in s_name_up and 'AQSTD' not in s_name_up and '+IS' not in s_name_up and 'BLANK' not in s_type_up:
+                # 1. Out of Range %IS (For all except blanks, but we tag if it's an unknown)
+                if pd.notna(s_is_area) and not is_blank_or_zero:
+                    if s_is_area < lower_is_limit or s_is_area > upper_is_limit:
+                        out_of_range_is.append({'name': s_name_raw, 'conc': conc, 'is_unknown': is_true_unknown})
+                
+                # 2 & 3. ULOQ and Predose (Strictly clinical unknowns only)
+                if is_true_unknown and pd.notna(conc):
+                    if pd.notna(uloq) and conc > uloq:
+                        above_uloq.append({'name': s_name_raw, 'conc': conc})
+                        
+                    is_predose = 'PRE' in s_name_up or bool(re.search(r'[-_]0+(?:\.0+)?(?:[-_\s]|$)', s_name_up))
+                    if is_predose:
                         parts = re.split(r'[-_]', s_name_raw)
                         current_subj = parts[0].upper() if len(parts) > 0 else s_name_up
                         
                         subj_mask = df[name_col].astype(str).str.upper().str.contains(current_subj, na=False, regex=False)
-                        unk_mask = df[type_col].astype(str).str.upper().str.contains('UNKNOWN', na=False)
-                        subj_concs = pd.to_numeric(df.loc[subj_mask & unk_mask, conc_col], errors='coerce')
+                        not_std_qc = ~df[name_col].astype(str).str.upper().str.contains('STD|CC|QC|LQC|MQC|HQC|BLK|BLANK|AQSTD', regex=True)
+                        subj_concs = pd.to_numeric(df.loc[subj_mask & not_std_qc, conc_col], errors='coerce')
                         cmax = subj_concs.max() if not subj_concs.empty else 0
                         
                         pd_flag = False
                         if pd.notna(lloq) and conc > lloq:
-                            pd_flag = True
-                        elif std_a_area is not None and pd.notna(a_area) and a_area > std_a_area:
                             pd_flag = True
                         elif pd.notna(cmax) and cmax > 0 and conc > (0.05 * cmax):
                             pd_flag = True
@@ -302,7 +304,7 @@ if st.button("Generate Dashboard"):
                     elif 'BLANK' in s_type_up or '-BLK' in s_name_up or '+IS' in s_name_up: chart_tuple[2] = pct_diff
                     else: chart_tuple[3] = pct_diff
                 
-                if 'UNKNOWN' in s_type_up and 'AQSTD' not in s_name_up and 'BLK' not in s_name_up and '+IS' not in s_name_up and 'BLANK' not in s_name_up:
+                if is_true_unknown:
                     chart_tuple[4] = conc
 
                 row_dict = {
@@ -316,7 +318,7 @@ if st.button("Generate Dashboard"):
                     "failed_ccqc": failed_ccqc
                 }
                 
-                if 'STANDARD' in s_type_up or 'QC' in s_type_up or 'QUALITY' in s_type_up:
+                if is_cc_qc or 'STANDARD' in s_type_up or 'QC' in s_type_up or 'QUALITY' in s_type_up:
                     row_dict["% Accuracy"] = acc_val
                     ccqc_rows.append(row_dict)
                     ccqc_chart.append(tuple(chart_tuple))
@@ -326,7 +328,7 @@ if st.button("Generate Dashboard"):
                     row_dict["% Accuracy"] = pct_diff 
                     sample_rows.append(row_dict)
                     sample_chart.append(tuple(chart_tuple))
-                    if 'UNKNOWN' in s_type_up and 'AQSTD' not in s_name_up and 'BLK' not in s_name_up and '+IS' not in s_name_up and 'BLANK' not in s_name_up:
+                    if is_true_unknown:
                         if s_name_up in seen_samples: 
                             file_sample_dupes.append(s_name_raw)
                         else:
@@ -346,10 +348,10 @@ if st.button("Generate Dashboard"):
                         file_cc_dict[std] = conc if pd.notna(conc) else ""
                         break
                 
-                if 'LQC' in s_name_up: lqc_list.append(conc if pd.notna(conc) else ""); lqc_ids.append(s_name_raw)
-                elif 'MMQC' in s_name_up: mmqc_list.append(conc if pd.notna(conc) else ""); mmqc_ids.append(s_name_raw)
-                elif 'MQC' in s_name_up and 'MMQC' not in s_name_up: mqc_list.append(conc if pd.notna(conc) else ""); mqc_ids.append(s_name_raw)
-                elif 'HQC' in s_name_up: hqc_list.append(conc if pd.notna(conc) else ""); hqc_ids.append(s_name_raw)
+                if 'LQC' in s_name_up: lqc_list.append(conc if pd.notna(conc) else ""); lqc_ids.append(extract_qc_id(s_name_raw))
+                elif 'MMQC' in s_name_up: mmqc_list.append(conc if pd.notna(conc) else ""); mmqc_ids.append(extract_qc_id(s_name_raw))
+                elif 'MQC' in s_name_up and 'MMQC' not in s_name_up: mqc_list.append(conc if pd.notna(conc) else ""); mqc_ids.append(extract_qc_id(s_name_raw))
+                elif 'HQC' in s_name_up: hqc_list.append(conc if pd.notna(conc) else ""); hqc_ids.append(extract_qc_id(s_name_raw))
 
             file_cc_dict['Slope'] = "" if pd.isna(slope) else slope
             file_cc_dict['Intercept'] = "" if pd.isna(intercept) else intercept
@@ -359,7 +361,8 @@ if st.button("Generate Dashboard"):
             # Anomaly Tracker only monitors Main files, ignores intentional Repeats/ISRs
             if file_category == "Main":
                 for smp in out_of_range_is:
-                    all_repeats_data.append({"Batch Name": safe_sheet_name, "Sample Name": smp['name'], "Concentration": smp['conc'], "Reason Code": "Out of Range %IS"})
+                    if smp['is_unknown']: # Only push true unknowns to the clinical repeats tracker
+                        all_repeats_data.append({"Batch Name": safe_sheet_name, "Sample Name": smp['name'], "Concentration": smp['conc'], "Reason Code": "Out of Range %IS"})
                 for smp in above_uloq:
                     all_repeats_data.append({"Batch Name": safe_sheet_name, "Sample Name": smp['name'], "Concentration": smp['conc'], "Reason Code": "Above ULOQ"})
                 for smp in predose_repeats:
@@ -381,11 +384,20 @@ if st.button("Generate Dashboard"):
             final_chart = ccqc_chart + [(np.nan, np.nan, np.nan, np.nan, np.nan), (np.nan, np.nan, np.nan, np.nan, np.nan)] + sample_chart
             
             batch_meta_data[safe_sheet_name] = {
+                'full_file_name': file.name,
+                'ccid_str': ccid_str,
                 'rows': final_rows, 'chart_data': final_chart,
                 'slope': slope, 'intercept': intercept, 'r_val': r_val,
-                'cc_pass': cc_pass, 'lqc_pass': lqc_pass, 'mmqc_pass': mmqc_pass, 'mqc_pass': mqc_pass, 'hqc_pass': hqc_pass,
+                'avg_is_area': avg_is_area,
+                'cc_total': cc_total, 'cc_pass': cc_pass, 'failed_cc_ids': failed_cc_ids,
+                'lqc_objs': lqc_list_objs, 'mmqc_objs': mmqc_list_objs, 
+                'mqc_objs': mqc_list_objs, 'hqc_objs': hqc_list_objs,
                 'std_a_area': std_a_area, 'std_zero_is_area': std_zero_is_area,
-                'carryover': carryover_samples[:3], 'out_of_range': out_of_range_is, 'above_uloq': above_uloq, 'predose_repeats': predose_repeats
+                'blk_a_area': blk_a_area, 'blk_is_area': blk_is_area,
+                'zero_a_area': zero_a_area, 'zero_is_area': zero_is_area,
+                'mph_a_area': mph_a_area, 'mph_is_area': mph_is_area,
+                'carryover': carryover_samples[:3], 'out_of_range': out_of_range_is, 
+                'above_uloq': above_uloq, 'predose_repeats': predose_repeats
             }
             
             nom_check_msg = "All CC and QC concentration matching nominal value." if len(nominals) > 0 else "No nominals defined."
@@ -511,7 +523,6 @@ if st.button("Generate Dashboard"):
             qc_df = pd.concat([pd.DataFrame([row_nom_qc, row_low_qc, row_up_qc]), qc_df_data], ignore_index=True)
             excel_tabs["QC"] = qc_df[qc_columns]
             
-        # Define sorted_batch_keys once here to use for both exports
         sorted_batch_keys = sorted(batch_meta_data.keys(), key=natural_sort_key)
 
         # --- 4. EXPORT WRITER ---
@@ -741,7 +752,7 @@ if st.button("Generate Dashboard"):
                     ws.write(or_start, 7, "Concentration", table_header_green)
                     ws.write(or_start, 8, "Above ULOQ Samples", table_header_green)
                     ws.write(or_start, 9, "Concentration", table_header_green)
-                    ws.write(or_start, 10, "Predose Repeats", table_header_green)
+                    ws.write(or_start, 10, "Predose Detectable", table_header_green)
                     ws.write(or_start, 11, "Concentration", table_header_green)
                     
                     out_is = meta.get('out_of_range', [])
