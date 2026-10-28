@@ -197,7 +197,7 @@ if st.button("Generate Dashboard"):
             
             std_a_area, std_zero_is_area = None, None
             cc_pass, lqc_pass, mmqc_pass, mqc_pass, hqc_pass = 0, 0, 0, 0, 0
-            out_of_range_is, above_uloq = [], []
+            out_of_range_is, above_uloq, predose_repeats = [], [], []
             carryover_samples = []
             
             cc_qc_df = df[df[type_col].astype(str).str.contains('Standard|QC|Quality', case=False, na=False)].copy()
@@ -260,11 +260,38 @@ if st.button("Generate Dashboard"):
                     if 'MQC' in s_name_up and 'MMQC' not in s_name_up and 85 <= acc_val <= 115: mqc_pass += 1
                     if 'HQC' in s_name_up and 85 <= acc_val <= 115: hqc_pass += 1
                 
-                if pd.notna(s_is_area) and ('STANDARD' in s_type_up or 'QC' in s_type_up or 'UNKNOWN' in s_type_up):
+                # Check for Repeats ONLY on 'UNKNOWN' types (Ignore Standards, QCs, Blanks)
+                if pd.notna(s_is_area) and 'UNKNOWN' in s_type_up:
                     if s_is_area < lower_is_limit or s_is_area > upper_is_limit:
-                        if 'BLK' not in s_name_up and 'AQSTD' not in s_name_up: out_of_range_is.append({'name': s_name_raw, 'conc': conc})
-                if 'UNKNOWN' in s_type_up and pd.notna(conc) and conc > uloq:
-                    above_uloq.append({'name': s_name_raw, 'conc': conc})
+                        if 'BLK' not in s_name_up and 'AQSTD' not in s_name_up and '+IS' not in s_name_up and 'BLANK' not in s_type_up:
+                            out_of_range_is.append({'name': s_name_raw, 'conc': conc})
+                
+                if 'UNKNOWN' in s_type_up and pd.notna(conc):
+                    if conc > uloq:
+                        if 'BLK' not in s_name_up and 'AQSTD' not in s_name_up and '+IS' not in s_name_up and 'BLANK' not in s_type_up:
+                            above_uloq.append({'name': s_name_raw, 'conc': conc})
+                    
+                    # Predose check for UNKNOWN samples
+                    is_predose = 'PRE' in s_name_up or bool(re.search(r'[-_]0(\.0+)?$', s_name_up))
+                    if is_predose and 'BLK' not in s_name_up and 'AQSTD' not in s_name_up and '+IS' not in s_name_up and 'BLANK' not in s_type_up:
+                        parts = re.split(r'[-_]', s_name_raw)
+                        current_subj = parts[0].upper() if len(parts) > 0 else s_name_up
+                        
+                        subj_mask = df[name_col].astype(str).str.upper().str.contains(current_subj, na=False, regex=False)
+                        unk_mask = df[type_col].astype(str).str.upper().str.contains('UNKNOWN', na=False)
+                        subj_concs = pd.to_numeric(df.loc[subj_mask & unk_mask, conc_col], errors='coerce')
+                        cmax = subj_concs.max() if not subj_concs.empty else 0
+                        
+                        pd_flag = False
+                        if pd.notna(lloq) and conc > lloq:
+                            pd_flag = True
+                        elif std_a_area is not None and pd.notna(a_area) and a_area > std_a_area:
+                            pd_flag = True
+                        elif pd.notna(cmax) and cmax > 0 and conc > (0.05 * cmax):
+                            pd_flag = True
+                            
+                        if pd_flag:
+                            predose_repeats.append({'name': s_name_raw, 'conc': conc})
 
                 chart_tuple = [current_inj, np.nan, np.nan, np.nan, np.nan]
                 pct_diff = np.nan
@@ -335,6 +362,8 @@ if st.button("Generate Dashboard"):
                     all_repeats_data.append({"Batch Name": safe_sheet_name, "Sample Name": smp['name'], "Concentration": smp['conc'], "Reason Code": "Out of Range %IS"})
                 for smp in above_uloq:
                     all_repeats_data.append({"Batch Name": safe_sheet_name, "Sample Name": smp['name'], "Concentration": smp['conc'], "Reason Code": "Above ULOQ"})
+                for smp in predose_repeats:
+                    all_repeats_data.append({"Batch Name": safe_sheet_name, "Sample Name": smp['name'], "Concentration": smp['conc'], "Reason Code": "Predose Detectable"})
             
             for i in range(4):
                 q_dict = {
@@ -356,7 +385,7 @@ if st.button("Generate Dashboard"):
                 'slope': slope, 'intercept': intercept, 'r_val': r_val,
                 'cc_pass': cc_pass, 'lqc_pass': lqc_pass, 'mmqc_pass': mmqc_pass, 'mqc_pass': mqc_pass, 'hqc_pass': hqc_pass,
                 'std_a_area': std_a_area, 'std_zero_is_area': std_zero_is_area,
-                'carryover': carryover_samples[:3], 'out_of_range': out_of_range_is, 'above_uloq': above_uloq
+                'carryover': carryover_samples[:3], 'out_of_range': out_of_range_is, 'above_uloq': above_uloq, 'predose_repeats': predose_repeats
             }
             
             nom_check_msg = "All CC and QC concentration matching nominal value." if len(nominals) > 0 else "No nominals defined."
@@ -712,7 +741,7 @@ if st.button("Generate Dashboard"):
                     ws.write(or_start, 7, "Concentration", table_header_green)
                     ws.write(or_start, 8, "Above ULOQ Samples", table_header_green)
                     ws.write(or_start, 9, "Concentration", table_header_green)
-                    ws.write(or_start, 10, "Dose Repeats", table_header_green)
+                    ws.write(or_start, 10, "Predose Repeats", table_header_green)
                     ws.write(or_start, 11, "Concentration", table_header_green)
                     
                     out_is = meta.get('out_of_range', [])
@@ -731,6 +760,18 @@ if st.button("Generate Dashboard"):
                     for i, smp in enumerate(above_u):
                         ws.write(or_start + 1 + i, 8, smp['name'], data_white)
                         ws.write(or_start + 1 + i, 9, smp['conc'], data_yellow_float)
+
+                    predose_u = meta.get('predose_repeats', [])
+                    for i, smp in enumerate(predose_u):
+                        ws.write(or_start + 1 + i, 10, smp['name'], data_white)
+                        
+                        conc_val = smp['conc'] if pd.notna(smp['conc']) else ""
+                        if pd.notna(smp['conc']):
+                            fmt = data_yellow_float if smp['conc'] > uloq else data_white_float
+                        else:
+                            fmt = data_white
+                            
+                        ws.write(or_start + 1 + i, 11, conc_val, fmt)
 
             # --- APPLY BORDERS, STATS, AND FAILURE FORMATTING TO CC AND QC TABS ---
             for target_sheet in ["CC", "QC"]:
@@ -1158,6 +1199,22 @@ if st.button("Generate Dashboard"):
                     qa_ws.merge_range(qa_row, 0, qa_row, 1, rep_count, data_white_sdv)
                     qa_ws.merge_range(qa_row, 2, qa_row, 4, smp['name'], data_white_sdv)
                     qa_ws.merge_range(qa_row, 5, qa_row, 6, "Above ULOQ", data_white_sdv)
+                    
+                    conc_val = smp['conc'] if pd.notna(smp['conc']) else ""
+                    if pd.notna(smp['conc']):
+                        fmt = data_yellow_float_sdv if smp['conc'] > uloq else data_white_float_sdv
+                    else:
+                        fmt = data_white_sdv
+                        
+                    qa_ws.write(qa_row, 7, conc_val, fmt)
+                    
+                    rep_count += 1; qa_row += 1
+                    
+                predose_u = meta.get('predose_repeats', [])
+                for i, smp in enumerate(predose_u):
+                    qa_ws.merge_range(qa_row, 0, qa_row, 1, rep_count, data_white_sdv)
+                    qa_ws.merge_range(qa_row, 2, qa_row, 4, smp['name'], data_white_sdv)
+                    qa_ws.merge_range(qa_row, 5, qa_row, 6, "Predose Detectable", data_white_sdv)
                     
                     conc_val = smp['conc'] if pd.notna(smp['conc']) else ""
                     if pd.notna(smp['conc']):
