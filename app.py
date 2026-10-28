@@ -714,7 +714,14 @@ if st.button("Generate Dashboard"):
                     out_is = meta.get('out_of_range', [])
                     for i, smp in enumerate(out_is):
                         ws.write(or_start + 1 + i, 6, smp['name'], data_white)
-                        ws.write(or_start + 1 + i, 7, smp['conc'], data_yellow_float if pd.notna(smp['conc']) and smp['conc'] > uloq else data_white_float)
+                        
+                        conc_val = smp['conc'] if pd.notna(smp['conc']) else ""
+                        if pd.notna(smp['conc']):
+                            fmt = data_yellow_float if smp['conc'] > uloq else data_white_float
+                        else:
+                            fmt = data_white
+                            
+                        ws.write(or_start + 1 + i, 7, conc_val, fmt)
                         
                     above_u = meta.get('above_uloq', [])
                     for i, smp in enumerate(above_u):
@@ -978,12 +985,202 @@ if st.button("Generate Dashboard"):
                             ws_rep.write(row_idx, 6, "", data_white)
                         row_idx += 1
 
-        st.success("Dashboard successfully generated with Automated Repeats Tracker!")
-        st.download_button(
-            label="Download Master Excel Dashboard",
-            data=output.getvalue(),
-            file_name="Master_Bioanalytical_Dashboard.xlsx",
-            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-        )
+        # --- 5. EXPORT WRITER (SDV ONLY - INDIVIDUAL SHEETS) ---
+        output_sdv = io.BytesIO()
+        with pd.ExcelWriter(output_sdv, engine='xlsxwriter') as writer_sdv:
+            workbook_sdv = writer_sdv.book
+            tnr = {'font_name': 'Times New Roman', 'font_size': 10}
+            
+            table_header_green_sdv = workbook_sdv.add_format({**tnr, 'bold': True, 'bg_color': '#C6E0B4', 'border': 1, 'align': 'center', 'valign': 'vcenter'})
+            data_white_left_sdv = workbook_sdv.add_format({**tnr, 'bg_color': '#FFFFFF', 'border': 1, 'align': 'left', 'valign': 'vcenter'})
+            data_white_int_sdv = workbook_sdv.add_format({**tnr, 'bg_color': '#FFFFFF', 'border': 1, 'align': 'center', 'valign': 'vcenter', 'num_format': '0'})
+            data_white_float_sdv = workbook_sdv.add_format({**tnr, 'bg_color': '#FFFFFF', 'border': 1, 'align': 'center', 'valign': 'vcenter', 'num_format': '0.000'})
+            data_white_pct_sdv = workbook_sdv.add_format({**tnr, 'bg_color': '#FFFFFF', 'border': 1, 'align': 'center', 'valign': 'vcenter', 'num_format': '0.00'})
+            data_white_r_sdv = workbook_sdv.add_format({**tnr, 'bg_color': '#FFFFFF', 'border': 1, 'align': 'center', 'valign': 'vcenter', 'num_format': '0.0000'})
+            data_white_sdv = workbook_sdv.add_format({**tnr, 'bg_color': '#FFFFFF', 'border': 1, 'align': 'center', 'valign': 'vcenter'})
+            general_fmt_sdv = workbook_sdv.add_format({**tnr, 'align': 'center', 'valign': 'vcenter'})
+            
+            for safe_sheet_name in sorted_batch_keys:
+                meta = batch_meta_data[safe_sheet_name]
+                sheet_title = safe_sheet_name[:31]
+                qa_ws = workbook_sdv.add_worksheet(sheet_title)
+                qa_ws.set_column('A:B', 35, general_fmt_sdv)
+                qa_ws.set_column('C:D', 35, general_fmt_sdv)
+                qa_row = 0
+                
+                qa_ws.merge_range(qa_row, 0, qa_row, 6, f"Study data verification - Batch: {meta.get('full_file_name', safe_sheet_name)}", table_header_green_sdv)
+                qa_row += 1
+                
+                qa_ws.write(qa_row, 0, "LLOQ area", data_white_left_sdv)
+                std_a = meta.get('std_a_area')
+                avg_is = meta.get('avg_is_area')
+
+                qa_ws.write(qa_row, 1, std_a if pd.notna(std_a) else "N/A", data_white_int_sdv if pd.notna(std_a) else data_white_sdv)
+                qa_ws.merge_range(qa_row, 2, qa_row, 4, "Average IS area of accepted CC, QC samples", data_white_left_sdv)
+                qa_ws.merge_range(qa_row, 5, qa_row, 6, avg_is if pd.notna(avg_is) else "N/A", data_white_int_sdv if pd.notna(avg_is) else data_white_sdv)
+                qa_row += 1
+                
+                qa_ws.merge_range(qa_row, 0, qa_row, 6, "Acceptability of interference in Standard Blank, Standard Blank + IS and MPH/ESO/RCS", table_header_green_sdv)
+                qa_row += 1
+                
+                def calc_interf(area, ref_area):
+                    if pd.notna(area) and pd.notna(ref_area) and ref_area > 0:
+                        return (area / ref_area) * 100
+                    return "N/A"
+
+                blk_a = meta.get('blk_a_area'); blk_a_pct = calc_interf(blk_a, std_a)
+                blk_is = meta.get('blk_is_area'); blk_is_pct = calc_interf(blk_is, avg_is)
+                zero_a = meta.get('zero_a_area'); zero_a_pct = calc_interf(zero_a, std_a)
+                mph_a = meta.get('mph_a_area'); mph_a_pct = calc_interf(mph_a, std_a)
+                mph_is = meta.get('mph_is_area'); mph_is_pct = calc_interf(mph_is, avg_is)
+                
+                interf_accepted = "Accepted"
+                for pct in [blk_a_pct, zero_a_pct, mph_a_pct]:
+                    if isinstance(pct, (int, float)) and pct > 20.0: interf_accepted = "Not Accepted"
+                for pct in [blk_is_pct, mph_is_pct]:
+                    if isinstance(pct, (int, float)) and pct > 5.0: interf_accepted = "Not Accepted"
+
+                def write_interf_row(label, area, pct):
+                    qa_ws.merge_range(qa_row, 0, qa_row, 1, label, data_white_left_sdv)
+                    qa_ws.merge_range(qa_row, 2, qa_row, 3, area if pd.notna(area) else "N/A", data_white_int_sdv if pd.notna(area) else data_white_sdv)
+                    qa_ws.merge_range(qa_row, 4, qa_row, 5, "% Interference", data_white_sdv)
+                    qa_ws.write(qa_row, 6, pct, data_white_pct_sdv if isinstance(pct, (int, float)) else data_white_sdv)
+
+                write_interf_row("Area Observed for Standard Blank at Analyte RT:", blk_a if pd.notna(blk_a) else 0.0, blk_a_pct); qa_row += 1
+                write_interf_row("Area Observed for Standard Blank at IS RT:", blk_is if pd.notna(blk_is) else 0.0, blk_is_pct); qa_row += 1
+                write_interf_row("Area Observed for Standard Blank+IS at Analyte RT:", zero_a if pd.notna(zero_a) else 0.0, zero_a_pct); qa_row += 1
+                write_interf_row("Area Observed for MPH/ESO/RCS at Analyte RT:", mph_a if pd.notna(mph_a) else 0.0, mph_a_pct); qa_row += 1
+                write_interf_row("Area Observed for MPH/ESO/RCS at IS RT:", mph_is if pd.notna(mph_is) else 0.0, mph_is_pct); qa_row += 1
+
+                qa_ws.merge_range(qa_row, 0, qa_row, 3, "% Interference for Standard Blank, Standard Blank+IS, MPH/ESO/RCS:", data_white_left_sdv)
+                qa_ws.merge_range(qa_row, 4, qa_row, 6, interf_accepted, data_white_sdv)
+                qa_row += 1
+                
+                qa_ws.merge_range(qa_row, 0, qa_row, 6, "Acceptability of Non-Zero calibration curve standards", table_header_green_sdv)
+                qa_row += 1
+                qa_ws.write(qa_row, 0, "CC ID:", data_white_left_sdv)
+                qa_ws.merge_range(qa_row, 1, qa_row, 3, meta.get('ccid_str', ''), data_white_sdv)
+                qa_ws.merge_range(qa_row, 4, qa_row, 5, "'r' value", data_white_left_sdv)
+                qa_ws.write(qa_row, 6, meta.get('r_val', ''), data_white_r_sdv)
+                qa_row += 1
+                
+                cc_total = meta.get('cc_total', 0); cc_pass = meta.get('cc_pass', 0)
+                cc_status = "Accepted" if cc_total >= 6 and (cc_pass / cc_total) >= 0.75 else "Not Accepted"
+                
+                qa_ws.write(qa_row, 0, "No. of CC standards injected", data_white_left_sdv)
+                qa_ws.merge_range(qa_row, 1, qa_row, 3, cc_total, data_white_sdv)
+                qa_ws.merge_range(qa_row, 4, qa_row, 5, "No. of CC standard accepted", data_white_left_sdv)
+                qa_ws.write(qa_row, 6, cc_pass, data_white_sdv)
+                qa_row += 1
+                
+                qa_ws.write(qa_row, 0, "Details of Failed CC standard(s), if any", data_white_left_sdv)
+                qa_ws.merge_range(qa_row, 1, qa_row, 6, ", ".join(meta.get('failed_cc_ids', [])), data_white_sdv)
+                qa_row += 1
+                qa_ws.write(qa_row, 0, "Calibration curve status:", data_white_left_sdv)
+                qa_ws.merge_range(qa_row, 1, qa_row, 6, cc_status, data_white_sdv)
+                qa_row += 1
+                
+                qa_ws.merge_range(qa_row, 0, qa_row, 6, "Acceptability of QC Samples", table_header_green_sdv)
+                qa_row += 1
+                qa_ws.merge_range(qa_row, 0, qa_row + 1, 0, "QC ID", table_header_green_sdv)
+                qa_ws.merge_range(qa_row, 1, qa_row, 2, "Total No. of QC Injected", table_header_green_sdv)
+                qa_ws.merge_range(qa_row, 3, qa_row, 4, "Total No. of QC Passed", table_header_green_sdv)
+                qa_ws.merge_range(qa_row, 5, qa_row, 6, "Acceptance status Yes/ No", table_header_green_sdv)
+                qa_row += 1
+                
+                qa_ws.write(qa_row, 1, "Set-1", table_header_green_sdv); qa_ws.write(qa_row, 2, "Set-2", table_header_green_sdv)
+                qa_ws.write(qa_row, 3, "Set-1", table_header_green_sdv); qa_ws.write(qa_row, 4, "Set-2", table_header_green_sdv)
+                qa_ws.write(qa_row, 5, "Set-1", table_header_green_sdv); qa_ws.write(qa_row, 6, "Set-2", table_header_green_sdv)
+                qa_row += 1
+                
+                def process_qc_sets(objs):
+                    mid = len(objs) // 2
+                    set1 = objs[:mid] if mid > 0 else objs
+                    set2 = objs[mid:] if mid > 0 else []
+                    s1_t, s1_p = len(set1), sum(1 for o in set1 if o['pass'])
+                    s2_t, s2_p = len(set2), sum(1 for o in set2 if o['pass'])
+                    
+                    s1_ok = "Yes" if s1_t > 0 and (s1_p / s1_t) >= 0.5 else ("-" if s1_t == 0 else "No")
+                    s2_ok = "Yes" if s2_t > 0 and (s2_p / s2_t) >= 0.5 else ("-" if s2_t == 0 else "No")
+                    
+                    f_id = extract_qc_id(objs[0]['name']) if objs else ""
+                    l_id = extract_qc_id(objs[-1]['name']) if objs else ""
+                    return f"({f_id}-{l_id})" if f_id and l_id else "", s1_t, s2_t, s1_p, s2_p, s1_ok, s2_ok
+                
+                tot_s1_inj = tot_s2_inj = tot_s1_pass = tot_s2_pass = 0
+                
+                for qc_lvl, objs in [("LQC", meta.get('lqc_objs',[])), ("MMQC", meta.get('mmqc_objs',[])), ("MQC", meta.get('mqc_objs',[])), ("HQC", meta.get('hqc_objs',[]))]:
+                    id_str, s1_t, s2_t, s1_p, s2_p, s1_ok, s2_ok = process_qc_sets(objs)
+                    tot_s1_inj += s1_t; tot_s2_inj += s2_t; tot_s1_pass += s1_p; tot_s2_pass += s2_p
+                    
+                    qa_ws.write(qa_row, 0, f"{qc_lvl} {id_str}", data_white_left_sdv)
+                    qa_ws.write(qa_row, 1, s1_t, data_white_sdv); qa_ws.write(qa_row, 2, s2_t, data_white_sdv)
+                    qa_ws.write(qa_row, 3, s1_p, data_white_sdv); qa_ws.write(qa_row, 4, s2_p, data_white_sdv)
+                    qa_ws.write(qa_row, 5, s1_ok, data_white_sdv); qa_ws.write(qa_row, 6, s2_ok, data_white_sdv)
+                    qa_row += 1
+                    
+                qa_ws.write(qa_row, 0, "Total no. of QCs", data_white_left_sdv)
+                qa_ws.write(qa_row, 1, tot_s1_inj, data_white_sdv); qa_ws.write(qa_row, 2, tot_s2_inj, data_white_sdv)
+                qa_ws.write(qa_row, 3, tot_s1_pass, data_white_sdv); qa_ws.write(qa_row, 4, tot_s2_pass, data_white_sdv)
+                
+                g_s1_ok = "Yes" if tot_s1_inj > 0 and (tot_s1_pass / tot_s1_inj) >= 0.67 else ("-" if tot_s1_inj==0 else "No")
+                g_s2_ok = "Yes" if tot_s2_inj > 0 and (tot_s2_pass / tot_s2_inj) >= 0.67 else ("-" if tot_s2_inj==0 else "No")
+                qa_ws.write(qa_row, 5, g_s1_ok, data_white_sdv); qa_ws.write(qa_row, 6, g_s2_ok, data_white_sdv)
+                qa_row += 1
+                
+                qa_ws.merge_range(qa_row, 0, qa_row, 6, "Repeat Sample Identification", table_header_green_sdv)
+                qa_row += 1
+                qa_ws.merge_range(qa_row, 0, qa_row, 1, "S.No", table_header_green_sdv)
+                qa_ws.merge_range(qa_row, 2, qa_row, 4, "Sample Name", table_header_green_sdv)
+                qa_ws.merge_range(qa_row, 5, qa_row, 6, "Repeat code", table_header_green_sdv)
+                qa_row += 1
+                
+                rep_count = 1
+                for smp in meta.get('out_of_range', []):
+                    qa_ws.merge_range(qa_row, 0, qa_row, 1, rep_count, data_white_sdv)
+                    qa_ws.merge_range(qa_row, 2, qa_row, 4, smp['name'], data_white_sdv)
+                    qa_ws.merge_range(qa_row, 5, qa_row, 6, "Out of Range %IS", data_white_sdv)
+                    
+                    conc_val = smp['conc'] if pd.notna(smp['conc']) else ""
+                    if pd.notna(smp['conc']):
+                        fmt = data_yellow_float_sdv if smp['conc'] > uloq else data_white_float_sdv
+                    else:
+                        fmt = data_white_sdv
+                        
+                    qa_ws.write(qa_row, 7, conc_val, fmt)
+                    
+                    rep_count += 1; qa_row += 1
+                for smp in meta.get('above_uloq', []):
+                    qa_ws.merge_range(qa_row, 0, qa_row, 1, rep_count, data_white_sdv)
+                    qa_ws.merge_range(qa_row, 2, qa_row, 4, smp['name'], data_white_sdv)
+                    qa_ws.merge_range(qa_row, 5, qa_row, 6, "Above ULOQ", data_white_sdv)
+                    
+                    conc_val = smp['conc'] if pd.notna(smp['conc']) else ""
+                    if pd.notna(smp['conc']):
+                        fmt = data_yellow_float_sdv if smp['conc'] > uloq else data_white_float_sdv
+                    else:
+                        fmt = data_white_sdv
+                        
+                    qa_ws.write(qa_row, 7, conc_val, fmt)
+                    
+                    rep_count += 1; qa_row += 1
+
+        st.success("Successfully Processed! Ready to Download.")
+        
+        col_dl1, col_dl2 = st.columns(2)
+        with col_dl1:
+            st.download_button(
+                label="Download Complete Data",
+                data=output.getvalue(),
+                file_name="Master_Bioanalytical_Dashboard.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+            )
+        with col_dl2:
+            st.download_button(
+                label="Download Study Data Verification alone",
+                data=output_sdv.getvalue(),
+                file_name="Study_Data_Verification_Only.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+            )
     else:
         st.error("Please upload BOTH the Setup file and the TSQ Export file(s).")
