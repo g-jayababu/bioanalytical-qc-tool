@@ -604,7 +604,6 @@ if st.button("Generate Dashboard"):
             
             green_sheet_bg = workbook.add_format({**tnr, 'bg_color': '#CDE4CE'})
             header_format = workbook.add_format({**tnr, 'bold': True, 'bg_color': '#C6E0B4', 'border': 1, 'align': 'center', 'valign': 'vcenter'})
-            yellow_flag = workbook.add_format({**tnr, 'bg_color': '#FFFF00', 'bold': True, 'font_color': '#000000', 'border': 1})
             
             bold_label = workbook.add_format({**tnr, 'bold': True, 'align': 'right', 'border': 1})
             general_fmt = workbook.add_format({**tnr, 'align': 'center', 'valign': 'vcenter'})
@@ -630,6 +629,7 @@ if st.button("Generate Dashboard"):
             failed_ccqc_string_fmt = workbook.add_format({**tnr, 'bg_color': '#FFFF00', 'font_color': '#000000', 'border': 1, 'align': 'center', 'valign': 'vcenter'})
             failed_ccqc_pct_fmt = workbook.add_format({**tnr, 'bg_color': '#FFFF00', 'font_color': '#000000', 'border': 1, 'align': 'center', 'valign': 'vcenter', 'num_format': '0.00'})
             failed_ccqc_float_fmt = workbook.add_format({**tnr, 'bg_color': '#FFFF00', 'font_color': '#000000', 'border': 1, 'align': 'center', 'valign': 'vcenter', 'num_format': '0.000'})
+            yellow_flag = failed_ccqc_float_fmt
 
             for sheet_name in ["Summary", "Repeats", "Repeat Analysis", "ISR Analysis", "CC", "QC"]:
                 if sheet_name in excel_tabs:
@@ -804,11 +804,11 @@ if st.button("Generate Dashboard"):
                     ws.write(r, 9, "NA" if pd.isna(pct_a) else pct_a, data_white_pct if pd.notna(pct_a) else data_white)
                     ws.write(r, 10, "NA" if pd.isna(pct_is) else pct_is, data_white_pct if pd.notna(pct_is) else data_white)
                 
-                if max_row > 0:
+                if max_row > 3:
                     chart1 = workbook.add_chart({'type': 'scatter'})
-                    chart1.add_series({'name': 'Samples', 'categories': [safe_sheet_name, 1, 26, max_row-1, 26], 'values': [safe_sheet_name, 1, 29, max_row-1, 29], 'marker': {'type': 'circle', 'size': 5, 'fill': {'color': '#4F81BD'}, 'border': {'none': True}}, 'line': {'none': True}})
-                    chart1.add_series({'name': 'Blank', 'categories': [safe_sheet_name, 1, 26, max_row-1, 26], 'values': [safe_sheet_name, 1, 28, max_row-1, 28], 'marker': {'type': 'circle', 'size': 5, 'fill': {'color': '#F79646'}, 'border': {'none': True}}, 'line': {'none': True}})
-                    chart1.add_series({'name': 'CCQC', 'categories': [safe_sheet_name, 1, 26, max_row-1, 26], 'values': [safe_sheet_name, 1, 27, max_row-1, 27], 'marker': {'type': 'circle', 'size': 5, 'fill': {'color': '#C0504D'}, 'border': {'none': True}}, 'line': {'none': True}})
+                    chart1.add_series({'name': 'Samples', 'categories': [safe_sheet_name, 3, 26, max_row-1, 26], 'values': [safe_sheet_name, 3, 29, max_row-1, 29], 'marker': {'type': 'circle', 'size': 5, 'fill': {'color': '#4F81BD'}, 'border': {'none': True}}, 'line': {'none': True}})
+                    chart1.add_series({'name': 'Blank', 'categories': [safe_sheet_name, 3, 26, max_row-1, 26], 'values': [safe_sheet_name, 3, 28, max_row-1, 28], 'marker': {'type': 'circle', 'size': 5, 'fill': {'color': '#F79646'}, 'border': {'none': True}}, 'line': {'none': True}})
+                    chart1.add_series({'name': 'CCQC', 'categories': [safe_sheet_name, 3, 26, max_row-1, 26], 'values': [safe_sheet_name, 3, 27, max_row-1, 27], 'marker': {'type': 'circle', 'size': 5, 'fill': {'color': '#C0504D'}, 'border': {'none': True}}, 'line': {'none': True}})
                     chart1.set_title({'name': 'IS Variation Plot', 'name_font': {'size': 12, 'name': 'Times New Roman'}})
                     chart1.set_x_axis({'name': 'Injection Order', 'name_font': {'size': 10, 'name': 'Times New Roman'}, 'num_font': {'name': 'Times New Roman'}, 'major_gridlines': {'visible': False}})
                     chart1.set_y_axis({'name': '% Difference from Mean IS', 'name_font': {'size': 10, 'name': 'Times New Roman'}, 'num_font': {'name': 'Times New Roman'}, 'major_gridlines': {'visible': True}, 'num_format': '0.00'})
@@ -818,7 +818,7 @@ if st.button("Generate Dashboard"):
                     ws.insert_chart('G18', chart1)
                     
                     chart2 = workbook.add_chart({'type': 'scatter', 'subtype': 'straight_with_markers'})
-                    chart2.add_series({'name': 'Concentration', 'categories': [safe_sheet_name, 1, 26, max_row-1, 26], 'values': [safe_sheet_name, 1, 30, max_row-1, 30], 'marker': {'type': 'diamond', 'size': 5, 'fill': {'color': '#4F81BD'}, 'border': {'color': '#4F81BD'}}, 'line': {'color': '#4F81BD', 'width': 1.5}})
+                    chart2.add_series({'name': 'Concentration', 'categories': [safe_sheet_name, 3, 26, max_row-1, 26], 'values': [safe_sheet_name, 3, 30, max_row-1, 30], 'marker': {'type': 'diamond', 'size': 5, 'fill': {'color': '#4F81BD'}, 'border': {'color': '#4F81BD'}}, 'line': {'color': '#4F81BD', 'width': 1.5}})
                     chart2.set_title({'name': 'Chart Title', 'name_font': {'size': 14, 'bold': True, 'name': 'Times New Roman'}})
                     chart2.set_x_axis({'major_gridlines': {'visible': False}, 'num_font': {'name': 'Times New Roman'}})
                     chart2.set_y_axis({'major_gridlines': {'visible': True}, 'num_format': '0.000', 'num_font': {'name': 'Times New Roman'}})
@@ -1399,6 +1399,33 @@ if st.button("Generate Dashboard"):
                         else:
                             if pd.isna(acc) or acc == "": qa_ws.write(r_idx + row_offset_for_data, 4, "", fmt_str)
                             else: qa_ws.write(r_idx + row_offset_for_data, 4, acc, fmt_pct)
+                            
+                if max_row > 3:
+                    c_start = row_offset_for_data + 3
+                    c_end = row_offset_for_data + max_row - 1
+                    
+                    chart1 = workbook_sdv.add_chart({'type': 'scatter'})
+                    chart1.add_series({'name': 'Samples', 'categories': [sheet_title, c_start, 26, c_end, 26], 'values': [sheet_title, c_start, 29, c_end, 29], 'marker': {'type': 'circle', 'size': 5, 'fill': {'color': '#4F81BD'}, 'border': {'none': True}}, 'line': {'none': True}})
+                    chart1.add_series({'name': 'Blank', 'categories': [sheet_title, c_start, 26, c_end, 26], 'values': [sheet_title, c_start, 28, c_end, 28], 'marker': {'type': 'circle', 'size': 5, 'fill': {'color': '#F79646'}, 'border': {'none': True}}, 'line': {'none': True}})
+                    chart1.add_series({'name': 'CCQC', 'categories': [sheet_title, c_start, 26, c_end, 26], 'values': [sheet_title, c_start, 27, c_end, 27], 'marker': {'type': 'circle', 'size': 5, 'fill': {'color': '#C0504D'}, 'border': {'none': True}}, 'line': {'none': True}})
+                    chart1.set_title({'name': 'IS Variation Plot', 'name_font': {'size': 12, 'name': 'Times New Roman'}})
+                    chart1.set_x_axis({'name': 'Injection Order', 'name_font': {'size': 10, 'name': 'Times New Roman'}, 'num_font': {'name': 'Times New Roman'}, 'major_gridlines': {'visible': False}})
+                    chart1.set_y_axis({'name': '% Difference from Mean IS', 'name_font': {'size': 10, 'name': 'Times New Roman'}, 'num_font': {'name': 'Times New Roman'}, 'major_gridlines': {'visible': True}, 'num_format': '0.00'})
+                    chart1.set_legend({'position': 'right', 'font': {'name': 'Times New Roman', 'size': 10}})
+                    chart1.set_size({'width': 450, 'height': 230})
+                    chart1.show_hidden_data()
+                    qa_ws.insert_chart('G18', chart1) 
+                    
+                    chart2 = workbook_sdv.add_chart({'type': 'scatter', 'subtype': 'straight_with_markers'})
+                    chart2.add_series({'name': 'Concentration', 'categories': [sheet_title, c_start, 26, c_end, 26], 'values': [sheet_title, c_start, 30, c_end, 30], 'marker': {'type': 'diamond', 'size': 5, 'fill': {'color': '#4F81BD'}, 'border': {'color': '#4F81BD'}}, 'line': {'color': '#4F81BD', 'width': 1.5}})
+                    chart2.set_title({'name': 'Chart Title', 'name_font': {'size': 14, 'bold': True, 'name': 'Times New Roman'}})
+                    chart2.set_x_axis({'major_gridlines': {'visible': False}, 'num_font': {'name': 'Times New Roman'}})
+                    chart2.set_y_axis({'major_gridlines': {'visible': True}, 'num_format': '0.000', 'num_font': {'name': 'Times New Roman'}})
+                    chart2.set_legend({'none': True})
+                    chart2.set_size({'width': 450, 'height': 230})
+                    chart2.show_hidden_data()
+                    chart2.show_blanks_as('span')
+                    qa_ws.insert_chart('G30', chart2)
 
         st.success("Successfully Processed! Ready to Download.")
         
