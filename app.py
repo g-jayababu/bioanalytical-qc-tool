@@ -946,17 +946,20 @@ if st.button("Process Data & Generate Reports"):
                     out_is = meta.get('out_of_range', [])
                     for i, smp in enumerate(out_is):
                         ws.write(or_start + 1 + i, 6, smp['name'], data_white)
-                        ws.write(or_start + 1 + i, 7, smp['conc'], data_yellow_float if pd.notna(smp['conc']) and smp['conc'] > uloq else data_white_float)
+                        conc_val = "" if pd.isna(smp['conc']) else smp['conc']
+                        ws.write(or_start + 1 + i, 7, conc_val, data_yellow_float if pd.notna(smp['conc']) and smp['conc'] > uloq else data_white_float)
                         
                     above_u = meta.get('above_uloq', [])
                     for i, smp in enumerate(above_u):
                         ws.write(or_start + 1 + i, 8, smp['name'], data_white)
-                        ws.write(or_start + 1 + i, 9, smp['conc'], data_yellow_float)
+                        conc_val = "" if pd.isna(smp['conc']) else smp['conc']
+                        ws.write(or_start + 1 + i, 9, conc_val, data_yellow_float)
 
                     predose_u = meta.get('predose_repeats', [])
                     for i, smp in enumerate(predose_u):
                         ws.write(or_start + 1 + i, 10, smp['name'], data_white)
-                        ws.write(or_start + 1 + i, 11, smp['conc'], data_yellow_float)
+                        conc_val = "" if pd.isna(smp['conc']) else smp['conc']
+                        ws.write(or_start + 1 + i, 11, conc_val, data_yellow_float)
 
             mapped_samples = {}
             if num_subj > 0 and periods_list and timepoints_list:
