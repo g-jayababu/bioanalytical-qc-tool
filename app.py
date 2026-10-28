@@ -203,7 +203,7 @@ if st.button("Generate Dashboard"):
             seen_ccqc, seen_samples = set(), set()
             
             std_a_area, std_zero_is_area = None, None
-            cc_pass, lqc_pass, mmqc_pass, mqc_pass, hqc_pass = 0, 0, 0, 0, 0
+            cc_total, cc_pass, lqc_pass, mmqc_pass, mqc_pass, hqc_pass = 0, 0, 0, 0, 0, 0
             failed_cc_ids = []
             lqc_list_objs, mmqc_list_objs, mqc_list_objs, hqc_list_objs = [], [], [], []
             
