@@ -203,16 +203,43 @@ if st.button("Generate Dashboard"):
             seen_ccqc, seen_samples = set(), set()
             
             std_a_area, std_zero_is_area = None, None
-            cc_pass, cc_total = 0, 0
-            failed_cc_ids = []
-            lqc_list_objs, mmqc_list_objs, mqc_list_objs, hqc_list_objs = [], [], [], []
-            
+            cc_pass, lqc_pass, mmqc_pass, mqc_pass, hqc_pass = 0, 0, 0, 0, 0
             out_of_range_is, above_uloq, predose_repeats = [], [], []
             carryover_samples = []
             
-            cc_qc_df = df[df[type_col].astype(str).str.contains('Standard|QC|Quality', case=False, na=False)].copy()
-            cc_qc_df[is_area_col] = pd.to_numeric(cc_qc_df[is_area_col], errors='coerce')
-            avg_is_area = cc_qc_df[is_area_col].mean()
+            # --- DYNAMIC IS AVERAGE EXCLUSION LOGIC ---
+            # Pre-pass: Calculate Mean IS Area purely from PASSED CCs and QCs to ensure failures don't skew the range limits
+            valid_is_areas = []
+            for index, row in df.iterrows():
+                s_name_raw = str(row[name_col]).strip()
+                s_name_up = s_name_raw.upper()
+                s_type_up = str(row[type_col]).strip().upper()
+                
+                is_blank_or_zero = any(x in s_name_up for x in ['BLK', 'BLANK', 'AQSTD', '+IS', 'MPH', 'MOH', 'ESO', 'RCS', 'MOBILE', 'MP', 'RECON'])
+                is_cc_qc = any(x in s_name_up for x in ['STD', 'CC', 'QC', 'LQC', 'MQC', 'HQC', 'QUALITY', 'STANDARD'])
+                is_true_cc_qc = (is_cc_qc or 'STANDARD' in s_type_up or 'QC' in s_type_up or 'QUALITY' in s_type_up) and not is_blank_or_zero
+                
+                if is_true_cc_qc:
+                    raw_acc_val = str(row[acc_col]).strip() if acc_col else ""
+                    acc_val = pd.to_numeric(raw_acc_val, errors='coerce') if raw_acc_val != "" else np.nan
+                    raw_is_area_val = str(row[is_area_col]).strip() if is_area_col else ""
+                    s_is_area = pd.to_numeric(raw_is_area_val, errors='coerce') if raw_is_area_val != "" else np.nan
+                    
+                    if pd.notna(acc_val) and pd.notna(s_is_area):
+                        if ('-A' in s_name_up or '-1' in s_name_up):
+                            if 80 <= acc_val <= 120:
+                                valid_is_areas.append(s_is_area)
+                        else:
+                            if 85 <= acc_val <= 115:
+                                valid_is_areas.append(s_is_area)
+                                
+            # Saftey fallback to all QCs if entire batch fails
+            if valid_is_areas:
+                avg_is_area = np.mean(valid_is_areas)
+            else:
+                temp_is = pd.to_numeric(df[df[type_col].astype(str).str.contains('Standard|QC|Quality', case=False, na=False)][is_area_col], errors='coerce')
+                avg_is_area = temp_is.mean() if not temp_is.empty else 0
+
             lower_is_limit = avg_is_area * 0.4 if pd.notna(avg_is_area) else 0
             upper_is_limit = avg_is_area * 1.6 if pd.notna(avg_is_area) else float('inf')
             
@@ -230,6 +257,9 @@ if st.button("Generate Dashboard"):
             blk_a_area, blk_is_area = None, None
             zero_a_area, zero_is_area = None, None
             mph_a_area, mph_is_area = None, None
+            failed_cc_ids = []
+            lqc_list_objs, mmqc_list_objs, mqc_list_objs, hqc_list_objs = [], [], [], []
+            cc_total = 0
             
             for index, row in df.iterrows():
                 s_name_raw = str(row[name_col]).strip()
@@ -248,6 +278,11 @@ if st.button("Generate Dashboard"):
                 raw_acc_val = str(row[acc_col]).strip() if acc_col else ""
                 acc_val = pd.to_numeric(raw_acc_val, errors='coerce') if raw_acc_val != "" else np.nan
                 
+                is_blank_or_zero = any(x in s_name_up for x in ['BLK', 'BLANK', 'AQSTD', '+IS', 'MPH', 'MOH', 'ESO', 'RCS', 'MOBILE', 'MP', 'RECON'])
+                is_cc_qc = any(x in s_name_up for x in ['STD', 'CC', 'QC', 'LQC', 'MQC', 'HQC', 'QUALITY', 'STANDARD'])
+                is_true_cc_qc = (is_cc_qc or 'STANDARD' in s_type_up or 'QC' in s_type_up or 'QUALITY' in s_type_up) and not is_blank_or_zero
+                is_true_unknown = ('UNKNOWN' in s_type_up or s_type_up == '') and not (is_blank_or_zero or is_cc_qc)
+                
                 # 1. Mobile Phase / Reconstitution Solution
                 if any(x in s_name_up for x in ['MPH', 'MOH', 'ESO', 'RCS', 'MOBILE', 'MP', 'RECON']):
                     if mph_a_area is None: mph_a_area = a_area if pd.notna(a_area) else 0.0
@@ -261,9 +296,8 @@ if st.button("Generate Dashboard"):
                     if blk_a_area is None: blk_a_area = a_area if pd.notna(a_area) else 0.0
                     if blk_is_area is None: blk_is_area = s_is_area if pd.notna(s_is_area) else 0.0
                 
-                # Flag if a CC or QC failed ICH M10 bounds dynamically
                 failed_ccqc = False
-                if 'STANDARD' in s_type_up or 'QC' in s_type_up or 'QUALITY' in s_type_up:
+                if is_true_cc_qc:
                     if pd.notna(acc_val):
                         # LLOQ Standard limits: 80 - 120%
                         if ('STANDARD' in s_type_up or 'STD' in s_name_up) and ('-A' in s_name_up or '-1' in s_name_up):
@@ -278,30 +312,25 @@ if st.button("Generate Dashboard"):
                 if ('ZERO' in s_name_up or 'AQSTD' in s_name_up or '+IS' in s_name_up) and std_zero_is_area is None: std_zero_is_area = s_is_area
                 if 'BLANK' in s_type_up or 'BLK' in s_name_up or 'MOBILE' in s_name_up: carryover_samples.append({'name': s_name_raw, 'a_area': a_area, 'is_area': s_is_area})
                 
-                # CC & QC Validation Extraction
-                if ('STANDARD' in s_type_up or 'STD' in s_name_up) and 'BLK' not in s_name_up and 'ZERO' not in s_name_up and 'AQSTD' not in s_name_up:
+                if ('STANDARD' in s_type_up or 'STD' in s_name_up) and is_true_cc_qc:
                     cc_total += 1
-                    if pd.notna(acc_val):
-                        if ('-A' in s_name_up or '-1' in s_name_up) and 80 <= acc_val <= 120: cc_pass += 1
-                        elif ('-A' not in s_name_up and '-1' not in s_name_up) and 85 <= acc_val <= 115: cc_pass += 1
-                        else: failed_cc_ids.append(s_name_raw)
+                    if not failed_ccqc: cc_pass += 1
                     else: failed_cc_ids.append(s_name_raw)
-                
-                if 'LQC' in s_name_up:
-                    lqc_list_objs.append({'name': s_name_raw, 'pass': pd.notna(acc_val) and 85 <= acc_val <= 115})
-                if 'MMQC' in s_name_up:
-                    mmqc_list_objs.append({'name': s_name_raw, 'pass': pd.notna(acc_val) and 85 <= acc_val <= 115})
-                if 'MQC' in s_name_up and 'MMQC' not in s_name_up:
-                    mqc_list_objs.append({'name': s_name_raw, 'pass': pd.notna(acc_val) and 85 <= acc_val <= 115})
-                if 'HQC' in s_name_up:
-                    hqc_list_objs.append({'name': s_name_raw, 'pass': pd.notna(acc_val) and 85 <= acc_val <= 115})
+                    
+                if 'LQC' in s_name_up and is_true_cc_qc:
+                    lqc_list_objs.append({'name': s_name_raw, 'pass': not failed_ccqc})
+                    if not failed_ccqc: lqc_pass += 1
+                if 'MMQC' in s_name_up and is_true_cc_qc:
+                    mmqc_list_objs.append({'name': s_name_raw, 'pass': not failed_ccqc})
+                    if not failed_ccqc: mmqc_pass += 1
+                if 'MQC' in s_name_up and 'MMQC' not in s_name_up and is_true_cc_qc:
+                    mqc_list_objs.append({'name': s_name_raw, 'pass': not failed_ccqc})
+                    if not failed_ccqc: mqc_pass += 1
+                if 'HQC' in s_name_up and is_true_cc_qc:
+                    hqc_list_objs.append({'name': s_name_raw, 'pass': not failed_ccqc})
+                    if not failed_ccqc: hqc_pass += 1
                 
                 # --- IDENTIFY REPEATS & ANOMALIES ---
-                # Strictly isolate clinical unknowns from CCs, QCs, and Blanks
-                is_blank_or_zero = any(x in s_name_up for x in ['BLK', 'BLANK', 'AQSTD', '+IS', 'MPH', 'MOH', 'ESO', 'RCS', 'MOBILE', 'MP', 'RECON'])
-                is_cc_qc = any(x in s_name_up for x in ['STD', 'CC', 'QC', 'LQC', 'MQC', 'HQC', 'QUALITY', 'STANDARD'])
-                is_true_unknown = ('UNKNOWN' in s_type_up or s_type_up == '') and not (is_blank_or_zero or is_cc_qc)
-                
                 # 1. Out of Range %IS (For all except blanks, but we tag if it's an unknown)
                 if pd.notna(s_is_area) and not is_blank_or_zero:
                     if s_is_area < lower_is_limit or s_is_area > upper_is_limit:
@@ -336,8 +365,8 @@ if st.button("Generate Dashboard"):
                 
                 if pd.notna(s_is_area) and pd.notna(avg_is_area) and avg_is_area > 0:
                     pct_diff = (s_is_area / avg_is_area) * 100 - 100
-                    if 'STANDARD' in s_type_up or 'QC' in s_type_up or 'QUALITY' in s_type_up: chart_tuple[1] = pct_diff
-                    elif 'BLANK' in s_type_up or '-BLK' in s_name_up or '+IS' in s_name_up: chart_tuple[2] = pct_diff
+                    if is_true_cc_qc: chart_tuple[1] = pct_diff
+                    elif is_blank_or_zero: chart_tuple[2] = pct_diff
                     else: chart_tuple[3] = pct_diff
                 
                 if is_true_unknown:
@@ -354,7 +383,7 @@ if st.button("Generate Dashboard"):
                     "failed_ccqc": failed_ccqc
                 }
                 
-                if is_cc_qc or 'STANDARD' in s_type_up or 'QC' in s_type_up or 'QUALITY' in s_type_up:
+                if is_true_cc_qc:
                     row_dict["% Accuracy"] = acc_val
                     ccqc_rows.append(row_dict)
                     ccqc_chart.append(tuple(chart_tuple))
@@ -674,14 +703,20 @@ if st.button("Generate Dashboard"):
                         ws.write(r_idx, 3, "Calc.Conc.", table_header_green)
                         ws.write(r_idx, 4, row_dict.get("% Accuracy", "% Acc"), table_header_green)
                     else:
-                        ws.write(r_idx, 0, row_dict["Sample Name"], data_white)
+                        is_failed = row_dict.get("failed_ccqc", False)
+                        fmt_str = failed_ccqc_string_fmt if is_failed else data_white
+                        fmt_float = failed_ccqc_float_fmt if is_failed else data_white_float
+                        fmt_pct = failed_ccqc_pct_fmt if is_failed else data_white_pct
+                        
+                        ws.write(r_idx, 0, row_dict["Sample Name"], fmt_str)
                         
                         a_display = ""
                         if pd.notna(row_dict["Area"]):
                             a_display = int(row_dict["Area"]) if isinstance(row_dict["Area"], float) and row_dict["Area"].is_integer() else row_dict["Area"]
                         elif row_dict["Raw.Area"] != "" and row_dict["Raw.Area"].upper() != 'NAN':
                             a_display = row_dict["Raw.Area"]
-                        ws.write(r_idx, 1, a_display, data_white)
+                            
+                        ws.write(r_idx, 1, a_display, fmt_str if isinstance(a_display, str) else (failed_ccqc_string_fmt if is_failed else data_white))
                         
                         is_display = ""
                         if pd.notna(row_dict["IS area"]):
@@ -689,10 +724,10 @@ if st.button("Generate Dashboard"):
                         elif row_dict["Raw.IS"] != "" and row_dict["Raw.IS"].upper() != 'NAN':
                             is_display = row_dict["Raw.IS"]
                             
-                        if row_dict["failed_ccqc"] and is_display != "":
+                        if is_failed and is_display != "":
                             ws.write(r_idx, 2, f"{is_display}*", failed_ccqc_string_fmt)
                         else:
-                            ws.write(r_idx, 2, is_display, data_white)
+                            ws.write(r_idx, 2, is_display, fmt_str if isinstance(is_display, str) else (failed_ccqc_string_fmt if is_failed else data_white))
                             
                         c_display = ""
                         if pd.notna(row_dict["Calc.Conc."]):
@@ -701,20 +736,18 @@ if st.button("Generate Dashboard"):
                             c_display = row_dict["Raw.Conc."]
                             
                         if pd.notna(row_dict["Calc.Conc."]) and isinstance(c_display, (int, float)):
-                            if c_display > uloq:
+                            if c_display > uloq and not is_failed:
                                 ws.write(r_idx, 3, c_display, data_yellow_float)
                             else:
-                                ws.write(r_idx, 3, c_display, data_white_float)
+                                ws.write(r_idx, 3, c_display, fmt_float)
                         else:
-                            ws.write(r_idx, 3, c_display, data_white)
+                            ws.write(r_idx, 3, c_display, fmt_str)
                             
                         acc = row_dict.get("% Accuracy", "")
-                        if row_dict["failed_ccqc"]:
-                            if pd.isna(acc) or acc == "": ws.write(r_idx, 4, "", failed_ccqc_string_fmt)
-                            else: ws.write(r_idx, 4, acc, failed_ccqc_pct_fmt)
-                        else:
-                            if pd.isna(acc) or acc == "": ws.write(r_idx, 4, "", data_white)
-                            else: ws.write(r_idx, 4, acc, data_white_pct)
+                        if pd.isna(acc) or acc == "": 
+                            ws.write(r_idx, 4, "", fmt_str)
+                        else: 
+                            ws.write(r_idx, 4, acc, fmt_pct)
 
                     c_tuple = chart_data[r_idx]
                     ws.write(r_idx, 26, "" if pd.isna(c_tuple[0]) else c_tuple[0])
