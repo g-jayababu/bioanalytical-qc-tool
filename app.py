@@ -203,7 +203,10 @@ if st.button("Generate Dashboard"):
             seen_ccqc, seen_samples = set(), set()
             
             std_a_area, std_zero_is_area = None, None
-            cc_pass, lqc_pass, mmqc_pass, mqc_pass, hqc_pass = 0, 0, 0, 0, 0
+            cc_pass, cc_total = 0, 0
+            failed_cc_ids = []
+            lqc_list_objs, mmqc_list_objs, mqc_list_objs, hqc_list_objs = [], [], [], []
+            
             out_of_range_is, above_uloq, predose_repeats = [], [], []
             carryover_samples = []
             
@@ -224,6 +227,10 @@ if st.button("Generate Dashboard"):
             ccqc_rows.append({"Sample Name": "Sample Name", "Area": "Area", "IS area": "IS area", "Calc.Conc.": "Calc.Conc.", "Raw.Conc.": "", "% Accuracy": "% Acc", "failed_ccqc": False})
             ccqc_chart.append((np.nan, np.nan, np.nan, np.nan, np.nan))
             
+            blk_a_area, blk_is_area = None, None
+            zero_a_area, zero_is_area = None, None
+            mph_a_area, mph_is_area = None, None
+            
             for index, row in df.iterrows():
                 s_name_raw = str(row[name_col]).strip()
                 s_name_up = s_name_raw.upper()
@@ -240,6 +247,19 @@ if st.button("Generate Dashboard"):
                 
                 raw_acc_val = str(row[acc_col]).strip() if acc_col else ""
                 acc_val = pd.to_numeric(raw_acc_val, errors='coerce') if raw_acc_val != "" else np.nan
+                
+                # 1. Mobile Phase / Reconstitution Solution
+                if any(x in s_name_up for x in ['MPH', 'MOH', 'ESO', 'RCS', 'MOBILE', 'MP', 'RECON']):
+                    if mph_a_area is None: mph_a_area = a_area if pd.notna(a_area) else 0.0
+                    if mph_is_area is None: mph_is_area = s_is_area if pd.notna(s_is_area) else 0.0
+                # 2. Standard Blank + IS (Zero)
+                elif ('ZERO' in s_name_up or '+IS' in s_name_up or 'BLANK+IS' in s_name_up) and 'AQSTD' not in s_name_up:
+                    if zero_a_area is None: zero_a_area = a_area if pd.notna(a_area) else 0.0
+                    if zero_is_area is None: zero_is_area = s_is_area if pd.notna(s_is_area) else 0.0
+                # 3. Standard Blank
+                elif 'BLK' in s_name_up or 'BLANK' in s_type_up:
+                    if blk_a_area is None: blk_a_area = a_area if pd.notna(a_area) else 0.0
+                    if blk_is_area is None: blk_is_area = s_is_area if pd.notna(s_is_area) else 0.0
                 
                 # Flag if a CC or QC failed ICH M10 bounds dynamically
                 failed_ccqc = False
@@ -258,14 +278,23 @@ if st.button("Generate Dashboard"):
                 if ('ZERO' in s_name_up or 'AQSTD' in s_name_up or '+IS' in s_name_up) and std_zero_is_area is None: std_zero_is_area = s_is_area
                 if 'BLANK' in s_type_up or 'BLK' in s_name_up or 'MOBILE' in s_name_up: carryover_samples.append({'name': s_name_raw, 'a_area': a_area, 'is_area': s_is_area})
                 
-                if pd.notna(acc_val):
-                    if 'STANDARD' in s_type_up or 'STD' in s_name_up:
+                # CC & QC Validation Extraction
+                if ('STANDARD' in s_type_up or 'STD' in s_name_up) and 'BLK' not in s_name_up and 'ZERO' not in s_name_up and 'AQSTD' not in s_name_up:
+                    cc_total += 1
+                    if pd.notna(acc_val):
                         if ('-A' in s_name_up or '-1' in s_name_up) and 80 <= acc_val <= 120: cc_pass += 1
                         elif ('-A' not in s_name_up and '-1' not in s_name_up) and 85 <= acc_val <= 115: cc_pass += 1
-                    if 'LQC' in s_name_up and 85 <= acc_val <= 115: lqc_pass += 1
-                    if 'MMQC' in s_name_up and 85 <= acc_val <= 115: mmqc_pass += 1
-                    if 'MQC' in s_name_up and 'MMQC' not in s_name_up and 85 <= acc_val <= 115: mqc_pass += 1
-                    if 'HQC' in s_name_up and 85 <= acc_val <= 115: hqc_pass += 1
+                        else: failed_cc_ids.append(s_name_raw)
+                    else: failed_cc_ids.append(s_name_raw)
+                
+                if 'LQC' in s_name_up:
+                    lqc_list_objs.append({'name': s_name_raw, 'pass': pd.notna(acc_val) and 85 <= acc_val <= 115})
+                if 'MMQC' in s_name_up:
+                    mmqc_list_objs.append({'name': s_name_raw, 'pass': pd.notna(acc_val) and 85 <= acc_val <= 115})
+                if 'MQC' in s_name_up and 'MMQC' not in s_name_up:
+                    mqc_list_objs.append({'name': s_name_raw, 'pass': pd.notna(acc_val) and 85 <= acc_val <= 115})
+                if 'HQC' in s_name_up:
+                    hqc_list_objs.append({'name': s_name_raw, 'pass': pd.notna(acc_val) and 85 <= acc_val <= 115})
                 
                 # --- IDENTIFY REPEATS & ANOMALIES ---
                 # Strictly isolate clinical unknowns from CCs, QCs, and Blanks
@@ -530,6 +559,7 @@ if st.button("Generate Dashboard"):
             qc_df = pd.concat([pd.DataFrame([row_nom_qc, row_low_qc, row_up_qc]), qc_df_data], ignore_index=True)
             excel_tabs["QC"] = qc_df[qc_columns]
             
+        # Define sorted_batch_keys once here to use for both exports
         sorted_batch_keys = sorted(batch_meta_data.keys(), key=natural_sort_key)
 
         # --- 4. EXPORT WRITER ---
