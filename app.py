@@ -59,6 +59,13 @@ def extract_sort_num(val):
     nums = re.findall(r'\d+', str(val))
     return int(nums[-1]) if nums else 0
 
+def extract_qc_id(name):
+    """Extracts only the last 2/3 digits of the QC Sample ID for clean reporting"""
+    parts = re.split(r'[-_]', str(name).strip())
+    if parts and parts[-1].strip().isdigit():
+        return parts[-1].strip()
+    return str(name).strip()
+
 def natural_sort_key(s):
     """Splits string into text and numbers for true alphanumerical sorting (e.g., S-2 before S-10)"""
     return [int(text) if text.isdigit() else text.lower() for text in re.split(r'(\d+)', str(s))]
@@ -757,15 +764,16 @@ if st.button("Generate Dashboard"):
                     
                     out_is = meta.get('out_of_range', [])
                     for i, smp in enumerate(out_is):
-                        ws.write(or_start + 1 + i, 6, smp['name'], data_white)
-                        
-                        conc_val = smp['conc'] if pd.notna(smp['conc']) else ""
-                        if pd.notna(smp['conc']):
-                            fmt = data_yellow_float if smp['conc'] > uloq else data_white_float
-                        else:
-                            fmt = data_white
+                        if smp.get('is_unknown', True):
+                            ws.write(or_start + 1 + i, 6, smp['name'], data_white)
                             
-                        ws.write(or_start + 1 + i, 7, conc_val, fmt)
+                            conc_val = smp['conc'] if pd.notna(smp['conc']) else ""
+                            if pd.notna(smp['conc']):
+                                fmt = data_yellow_float if smp['conc'] > uloq else data_white_float
+                            else:
+                                fmt = data_white
+                                
+                            ws.write(or_start + 1 + i, 7, conc_val, fmt)
                         
                     above_u = meta.get('above_uloq', [])
                     for i, smp in enumerate(above_u):
@@ -1193,19 +1201,20 @@ if st.button("Generate Dashboard"):
                 
                 rep_count = 1
                 for smp in meta.get('out_of_range', []):
-                    qa_ws.merge_range(qa_row, 0, qa_row, 1, rep_count, data_white_sdv)
-                    qa_ws.merge_range(qa_row, 2, qa_row, 4, smp['name'], data_white_sdv)
-                    qa_ws.merge_range(qa_row, 5, qa_row, 6, "Out of Range %IS", data_white_sdv)
-                    
-                    conc_val = smp['conc'] if pd.notna(smp['conc']) else ""
-                    if pd.notna(smp['conc']):
-                        fmt = data_yellow_float_sdv if smp['conc'] > uloq else data_white_float_sdv
-                    else:
-                        fmt = data_white_sdv
+                    if smp.get('is_unknown', True):
+                        qa_ws.merge_range(qa_row, 0, qa_row, 1, rep_count, data_white_sdv)
+                        qa_ws.merge_range(qa_row, 2, qa_row, 4, smp['name'], data_white_sdv)
+                        qa_ws.merge_range(qa_row, 5, qa_row, 6, "Out of Range %IS", data_white_sdv)
                         
-                    qa_ws.write(qa_row, 7, conc_val, fmt)
-                    
-                    rep_count += 1; qa_row += 1
+                        conc_val = smp['conc'] if pd.notna(smp['conc']) else ""
+                        if pd.notna(smp['conc']):
+                            fmt = data_yellow_float_sdv if smp['conc'] > uloq else data_white_float_sdv
+                        else:
+                            fmt = data_white_sdv
+                            
+                        qa_ws.write(qa_row, 7, conc_val, fmt)
+                        
+                        rep_count += 1; qa_row += 1
                 for smp in meta.get('above_uloq', []):
                     qa_ws.merge_range(qa_row, 0, qa_row, 1, rep_count, data_white_sdv)
                     qa_ws.merge_range(qa_row, 2, qa_row, 4, smp['name'], data_white_sdv)
