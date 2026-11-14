@@ -1,6 +1,11 @@
 streamlit==1.32.0
 pandas==2.1.4
-altair==4.2.2
-openpyxl
-xlrd
-XlsxWriter
+numpy==1.26.4
+pyarrow==15.0.2
+altair==5.2.0
+openpyxl==3.1.5
+xlsxwriter==3.2.0
+xlrd==2.0.1
+pillow==10.2.0
+protobuf==4.25.3
+requests==2.31.0
